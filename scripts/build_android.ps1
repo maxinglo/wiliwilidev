@@ -42,6 +42,16 @@ if (!(Test-Path -LiteralPath $generator)) {
     Invoke-Checked cmake @('--build', $hostBuild, '--config', 'Release', '--parallel', "$Jobs")
 }
 
+# curl shares its mbedTLS RNG between concurrent HTTP requests. Configure the
+# installed headers as well as the library so every consumer sees the same ABI.
+$mbedConfigPath = Join-Path $ToolchainRoot 'sources/mbedtls-3.6.7/include/mbedtls/mbedtls_config.h'
+$mbedConfig = [IO.File]::ReadAllText($mbedConfigPath)
+$threadedMbedConfig = $mbedConfig.Replace('//#define MBEDTLS_THREADING_C', '#define MBEDTLS_THREADING_C').Replace(
+    '//#define MBEDTLS_THREADING_PTHREAD', '#define MBEDTLS_THREADING_PTHREAD')
+if ($threadedMbedConfig -ne $mbedConfig) {
+    [IO.File]::WriteAllText($mbedConfigPath, $threadedMbedConfig, [Text.UTF8Encoding]::new($false))
+}
+
 $commonOptions = @('-G', 'Ninja', "-DCMAKE_TOOLCHAIN_FILE=$nativeToolchain",
     "-DANDROID_ABI=$Abi", '-DANDROID_PLATFORM=android-23', '-DANDROID_STL=c++_shared',
     '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON', '-DCMAKE_BUILD_TYPE=Release',

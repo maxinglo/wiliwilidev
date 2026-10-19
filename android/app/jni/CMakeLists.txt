@@ -43,4 +43,18 @@ set(DISABLE_WEBP ON CACHE BOOL "" FORCE)
 set(BRLS_UNITY_BUILD ON CACHE BOOL "" FORCE)
 add_subdirectory("${WILIWILI_ROOT}" wiliwili)
 target_sources(wiliwili PRIVATE android_bridge.cpp)
-target_link_options(wiliwili PRIVATE "-Wl,-z,max-page-size=16384")
+# Force our matching TLS implementation into the binary even when mpv already
+# exports identically named functions. Otherwise archive extraction can satisfy
+# curl's references from mpv's ABI-incompatible mbedTLS instead.
+target_link_libraries(wiliwili PRIVATE "-Wl,--whole-archive"
+    "${ANDROID_DEPS_PREFIX}/lib/libmbedtls.a"
+    "${ANDROID_DEPS_PREFIX}/lib/libmbedx509.a"
+    "${ANDROID_DEPS_PREFIX}/lib/libmbedcrypto.a"
+    "${ANDROID_DEPS_PREFIX}/lib/libeverest.a"
+    "${ANDROID_DEPS_PREFIX}/lib/libp256m.a"
+    "-Wl,--no-whole-archive")
+target_link_options(wiliwili PRIVATE
+    "-Wl,-z,max-page-size=16384"
+    # mpv-android ships its own curl/mbedTLS. Bind the application's static
+    # versions locally: interposing incompatible TLS contexts corrupts memory.
+    "-Wl,--exclude-libs,libcurl.a:libmbedtls.a:libmbedx509.a:libmbedcrypto.a:libeverest.a:libp256m.a")

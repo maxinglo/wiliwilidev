@@ -32,6 +32,7 @@ import org.libsdl.app.SDLSurface;
 public class WiliwiliActivity extends SDLActivity {
     private static VideoSurface videoSurface;
     private static native void nativeInitialize(Context context);
+    private static native void nativePauseVideo();
     private final Handler backHandler = new Handler(Looper.getMainLooper());
     private final Runnable releaseBack = () -> SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_BACK);
     private OnBackInvokedCallback backCallback;
@@ -100,6 +101,14 @@ public class WiliwiliActivity extends SDLActivity {
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                     OnBackInvokedDispatcher.PRIORITY_DEFAULT, backCallback);
         }
+    }
+
+    @Override
+    protected void onPause() {
+        // SDL's focus event can remain queued while its render thread is paused.
+        // Release the decoder on the Android lifecycle before Surface destruction.
+        if (videoSurface != null) nativePauseVideo();
+        super.onPause();
     }
 
     @Override

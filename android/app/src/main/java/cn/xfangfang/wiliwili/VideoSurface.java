@@ -5,6 +5,7 @@ import android.graphics.PixelFormat;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
 import android.os.Build;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.Display;
 import android.view.Gravity;
@@ -14,6 +15,8 @@ import android.view.SurfaceView;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.RelativeLayout;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /** A decoder-owned HDR layer underneath the transparent SDL controls/danmaku. */
 final class VideoSurface implements SurfaceHolder.Callback {
@@ -21,6 +24,7 @@ final class VideoSurface implements SurfaceHolder.Callback {
     private final FrameLayout container;
     private final SurfaceView video;
     private volatile Surface surface;
+    private final Object surfaceLock = new Object();
     private final boolean hdr10;
 
     private static native void nativeSurfaceChanged();
@@ -69,11 +73,40 @@ final class VideoSurface implements SurfaceHolder.Callback {
         return hdrDisplay && hdrDecoder;
     }
 
-    Surface acquire() { return surface; }
+    Surface acquire() {
+        // Called by SDL's worker thread. Android's UI thread stays free to create
+        // a new Surface after a previous player hid/destroyed its HDR layer.
+        CountDownLatch shown = new CountDownLatch(1);
+        activity.runOnUiThread(() -> {
+            video.setVisibility(SurfaceView.VISIBLE);
+            shown.countDown();
+        });
+        try {
+            if (!shown.await(2, TimeUnit.SECONDS)) return null;
+            long deadline = SystemClock.uptimeMillis() + 2000;
+            synchronized (surfaceLock) {
+                while (surface == null || !surface.isValid()) {
+                    long remaining = deadline - SystemClock.uptimeMillis();
+                    if (remaining <= 0) return null;
+                    surfaceLock.wait(remaining);
+                }
+                return surface;
+            }
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+    }
     boolean supportsHdr10() { return hdr10; }
 
     void setBounds(int x, int y, int width, int height, float aspect, boolean crop, boolean stretch) {
         activity.runOnUiThread(() -> {
+            if (width <= 0 || height <= 0) {
+                // A retained 1x1 HDR buffer can keep the display in HDR mode.
+                // SurfaceView visibility removes that buffer from composition.
+                video.setVisibility(SurfaceView.INVISIBLE);
+                return;
+            }
             RelativeLayout.LayoutParams outer = new RelativeLayout.LayoutParams(Math.max(1, width), Math.max(1, height));
             outer.leftMargin = x;
             outer.topMargin = y;
@@ -88,7 +121,10 @@ final class VideoSurface implements SurfaceHolder.Callback {
     }
 
     @Override public void surfaceCreated(SurfaceHolder holder) {
-        surface = holder.getSurface();
+        synchronized (surfaceLock) {
+            surface = holder.getSurface();
+            surfaceLock.notifyAll();
+        }
         nativeSurfaceChanged();
         Log.i("wiliwili-hdr", "Video Surface created");
     }

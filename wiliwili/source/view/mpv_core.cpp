@@ -534,6 +534,10 @@ void MPVCore::init() {
         } else {
             // application is sleep, save the current state
             playing   = isPlaying();
+#ifdef __ANDROID__
+            int suspended = androidTakeSuspendedPlayback();
+            if (suspended >= 0) playing = suspended != 0;
+#endif
             sleepTime = std::chrono::system_clock::now();
             pause();
 #ifdef __ANDROID__
@@ -590,8 +594,9 @@ MPVCore::~MPVCore() = default;
 
 void MPVCore::clean() {
 #ifdef __ANDROID__
+    androidSetVideoPlayer(nullptr, false);
     brls::Application::getRunLoopEvent()->unsubscribe(androidFrameSubscription);
-    androidSetVideoBounds(0, 0, 1, 1, 1, false, false);
+    androidSetVideoBounds(0, 0, 0, 0, 1, false, false);
 #endif
     check_error(mpvCommandString(this->mpv, "quit"));
 
@@ -1038,7 +1043,7 @@ void MPVCore::eventMainLoop() {
                 video_stopped = false;
                 mpvCoreEvent.fire(MpvEventEnum::LOADING_END);
 #ifdef __ANDROID__
-                if (androidNativeVideo) {
+                if (androidNativeVideo && !androidOutputSuspended && androidHasFocus && !androidVideoSuspendPending()) {
                     if (getString("current-vo") != "mediacodec_embed") {
                         bool hasVideo = false;
                         for (int64_t i = 0, count = getInt("track-list/count"); i < count; ++i)
@@ -1053,7 +1058,7 @@ void MPVCore::eventMainLoop() {
                 break;
             case MPV_EVENT_VIDEO_RECONFIG:
 #ifdef __ANDROID__
-                if (androidNativeVideo) {
+                if (androidNativeVideo && !androidOutputSuspended && !androidVideoSuspendPending()) {
                     double aspect = getDouble("video-params/aspect");
                     int rotation = static_cast<int>(getInt("video-params/rotate"));
                     if (aspect > 0) {
@@ -1295,9 +1300,9 @@ void MPVCore::reset() {
 #ifdef __ANDROID__
 void MPVCore::configureAndroidOutput(bool forceSoftware) {
     bool native = androidHdrCapable && HARDWARE_DEC && !forceSoftware && !androidNativeFailed &&
-        !VIDEO_MIRROR && currentShader.empty() && VIDEO_BRIGHTNESS == 0 && VIDEO_CONTRAST == 0 &&
+        !VIDEO_MIRROR && currentShader.empty() && currentSetting.empty() && VIDEO_BRIGHTNESS == 0 && VIDEO_CONTRAST == 0 &&
         VIDEO_SATURATION == 0 && VIDEO_HUE == 0 && VIDEO_GAMMA == 0;
-    if (native && androidSurfaces.empty()) {
+    if (native) {
         auto* surface = androidAcquireVideoSurface();
         if (surface) {
             androidSurfaces.push_back(surface);
@@ -1311,10 +1316,11 @@ void MPVCore::configureAndroidOutput(bool forceSoftware) {
     } else {
         command_async("set", "vo", "libmpv");
         command_async("set", "hwdec", forceSoftware ? "no" : (HARDWARE_DEC ? "mediacodec-copy" : "no"));
-        androidSetVideoBounds(0, 0, 1, 1, 1, false, false);
+        androidSetVideoBounds(0, 0, 0, 0, 1, false, false);
         setFrameSize(rect);
     }
     androidNativeVideo = native;
+    androidSetVideoPlayer(mpv, native);
     androidOutputSuspended = false;
     androidBoundsValid = false;
     androidVideoRotation = -1;
@@ -1375,7 +1381,10 @@ void MPVCore::pause() { command_async("set", "pause", "yes"); }
 
 void MPVCore::stop() {
 #ifdef __ANDROID__
-    androidSetVideoBounds(0, 0, 1, 1, 1, false, false);
+    androidNativeVideo = false;
+    androidNativeFailed = true;
+    androidSetVideoPlayer(mpv, false);
+    androidSetVideoBounds(0, 0, 0, 0, 1, false, false);
     androidBoundsValid = false;
 #endif
     command_async("stop");

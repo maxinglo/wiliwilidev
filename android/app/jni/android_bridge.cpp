@@ -1,11 +1,16 @@
 #include <jni.h>
 #include <SDL2/SDL.h>
 #include <atomic>
+#include <mutex>
 #include "utils/android_video.hpp"
 
 namespace {
 jclass activityClass = nullptr;
 std::atomic<uint64_t> surfaceGeneration{0};
+std::mutex playerMutex;
+mpv_handle* videoPlayer = nullptr;
+bool nativeOutput = false;
+std::atomic<int> suspendedPlayback{-1};
 }
 
 extern "C" {
@@ -26,6 +31,31 @@ Java_cn_xfangfang_wiliwili_WiliwiliActivity_nativeInitialize(JNIEnv* env, jclass
 
 extern "C" JNIEXPORT void JNICALL
 Java_cn_xfangfang_wiliwili_VideoSurface_nativeSurfaceChanged(JNIEnv*, jclass) { ++surfaceGeneration; }
+
+extern "C" JNIEXPORT void JNICALL
+Java_cn_xfangfang_wiliwili_WiliwiliActivity_nativePauseVideo(JNIEnv*, jclass) {
+    std::lock_guard<std::mutex> lock(playerMutex);
+    if (!videoPlayer || !nativeOutput || suspendedPlayback.load() >= 0) return;
+    int paused = 1;
+    mpv_get_property(videoPlayer, "pause", MPV_FORMAT_FLAG, &paused);
+    suspendedPlayback = paused ? 0 : 1;
+    const char* pause[] = {"set", "pause", "yes", nullptr};
+    const char* detach[] = {"set", "vo", "null", nullptr};
+    const char* release[] = {"set", "hwdec", "no", nullptr};
+    mpv_command_async(videoPlayer, 0, pause);
+    mpv_command_async(videoPlayer, 0, detach);
+    mpv_command_async(videoPlayer, 0, release);
+}
+
+void androidSetVideoPlayer(mpv_handle* player, bool enabled) {
+    std::lock_guard<std::mutex> lock(playerMutex);
+    videoPlayer = player;
+    nativeOutput = enabled;
+    if (!enabled) suspendedPlayback = -1;
+}
+
+bool androidVideoSuspendPending() { return suspendedPlayback.load() >= 0; }
+int androidTakeSuspendedPlayback() { return suspendedPlayback.exchange(-1); }
 
 void* androidAcquireVideoSurface() {
     auto* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());

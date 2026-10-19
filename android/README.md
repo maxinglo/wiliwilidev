@@ -49,6 +49,10 @@ image requests use the application's JPEG fallback. TLS verification stays enabl
 Android's default X509 trust manager exports its trusted public certificates to a
 private PEM bundle on startup, which is passed to mpv for video and audio streams.
 The application's HTTP client uses Android's system certificate directory.
+Its static curl/mbedTLS symbols are hidden from the shared-library namespace so
+they cannot interpose mpv-android's separate TLS implementation.
+The build script enables mbedTLS's pthread locks in both its library and installed
+configuration headers, since curl shares RNG state across concurrent requests.
 
 Android 13+ system back gestures and legacy back keys are dispatched to borealis
 navigation, so closing a player, dialog, or settings page returns within the app.
