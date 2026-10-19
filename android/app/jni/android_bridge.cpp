@@ -1,9 +1,6 @@
 #include <jni.h>
 #include <SDL2/SDL.h>
 #include <atomic>
-#include <dlfcn.h>
-#include <android/native_window_jni.h>
-#include <android/log.h>
 #include "utils/android_video.hpp"
 
 namespace {
@@ -46,20 +43,9 @@ void androidReleaseVideoSurface(void* surface) {
 }
 
 bool androidSetVideoRotation(void* surface, int degrees) {
-    // Resolve the API 26 function dynamically so the APK still loads on API 23.
-    using SetTransform = int32_t (*)(ANativeWindow*, int32_t);
-    static void* nativeWindowLibrary = dlopen("libnativewindow.so", RTLD_NOW | RTLD_LOCAL);
-    static auto setTransform = nativeWindowLibrary
-        ? reinterpret_cast<SetTransform>(dlsym(nativeWindowLibrary, "ANativeWindow_setBuffersTransform")) : nullptr;
-    if (!setTransform || !surface) return degrees == 0;
-    auto* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
-    auto* window = ANativeWindow_fromSurface(env, static_cast<jobject>(surface));
-    if (!window) return false;
-    const int transform = degrees == 90 ? 4 : degrees == 180 ? 3 : degrees == 270 ? 7 : 0;
-    int result = setTransform(window, transform);
-    ANativeWindow_release(window);
-    if (result != 0) __android_log_print(ANDROID_LOG_WARN, "wiliwili-hdr", "Cannot rotate video Surface: %d", result);
-    return result == 0;
+    // MediaCodec owns the buffer transform and overwrites native-window changes.
+    // Keep rotated sources upright using libmpv's renderer and SDR tone mapping.
+    return degrees == 0;
 }
 
 bool androidSupportsHdr10() {

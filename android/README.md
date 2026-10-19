@@ -66,8 +66,9 @@ devices; the decoder supplies the appropriate SDR color metadata for each stream
 
 The app recreates the video output after Surface loss in the background and
 fits the surface to the player rectangle, including aspect overrides and crop.
-Container rotation uses the native window buffer transform on API 26+.
-On older devices, unsupported rotated streams use the OpenGL path instead.
+Streams with container rotation use the OpenGL path with SDR tone mapping so
+their orientation remains correct. The embedded MediaCodec VO cannot apply this
+rotation while preserving HDR, and the decoder overwrites native-window transforms.
 
 Devices without HDR10 support, software decoding, and CPU/GPU effects (mirror,
 shaders or picture adjustments) use the existing OpenGL renderer with SDR tone
