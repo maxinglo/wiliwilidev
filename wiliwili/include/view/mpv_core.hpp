@@ -401,6 +401,23 @@ public:
     inline static double VIDEO_GAMMA      = 0;
 
 private:
+#ifdef __ANDROID__
+    bool androidNativeVideo = false;
+    bool androidNativeFailed = false;
+    bool androidVideoDrawn = false;
+    bool androidBoundsValid = false;
+    bool androidHdrCapable = false;
+    bool androidHasFocus = true;
+    bool androidOutputSuspended = false;
+    float androidVideoAspect = 16.0f / 9.0f;
+    int androidVideoRotation = -1;
+    uint64_t androidSurfaceVersion = 0;
+    std::vector<void*> androidSurfaces;
+    std::string androidCurrentUrl, androidCurrentExtra;
+    brls::VoidEvent::Subscription androidFrameSubscription;
+    void configureAndroidOutput(bool forceSoftware = false);
+    bool retryAndroidSoftware();
+#endif
     mpv_handle *mpv                 = nullptr;
     mpv_render_context *mpv_context = nullptr;
     brls::Rect rect                 = {0, 0, 1920, 1080};

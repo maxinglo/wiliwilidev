@@ -2,7 +2,7 @@
 
 This port runs the wiliwili C++ application through borealis and SDL2. It targets
 Android 6.0 (API 23) and newer. The default build is `arm64-v8a`, uses OpenGL ES,
-enables MediaCodec copy decoding, and stores settings in the application's private
+supports native MediaCodec HDR10 output, and stores settings in the application's private
 files directory. It also exposes an Android TV launcher entry.
 
 Native code is built with Release optimizations. `assembleDebug` signs the APK
@@ -52,6 +52,29 @@ The application's HTTP client uses Android's system certificate directory.
 
 Android 13+ system back gestures and legacy back keys are dispatched to borealis
 navigation, so closing a player, dialog, or settings page returns within the app.
+
+## HDR10 playback
+
+On Android 7.0/API 24 and newer, the app checks the current display for HDR10 and
+the HEVC decoders for an HDR10 profile. When both are available and hardware
+decoding is enabled, mpv uses `hwdec=mediacodec`, `vo=mediacodec_embed`, and a
+decoder-owned SurfaceView. The system receives the original 10-bit YUV buffers,
+BT.2020/PQ signaling, and stream HDR metadata. The SDL controls, subtitles, and
+danmaku use a separate transparent RGBA layer. HDR video is never copied into the
+UI's 8-bit framebuffer. SDR videos also use this native output on HDR-capable
+devices; the decoder supplies the appropriate SDR color metadata for each stream.
+
+The app recreates the video output after Surface loss in the background and
+fits the surface to the player rectangle, including aspect overrides and crop.
+Container rotation uses the native window buffer transform on API 26+.
+On older devices, unsupported rotated streams use the OpenGL path instead.
+
+Devices without HDR10 support, software decoding, and CPU/GPU effects (mirror,
+shaders or picture adjustments) use the existing OpenGL renderer with SDR tone
+mapping. A failed native decoder is retried once with software decoding. Native
+HDR requires a real HDR stream; selecting an SDR rendition does not make it HDR.
+Bilibili HDR availability still depends on the video, login, and account access.
+Dolby Vision playback has not been implemented or validated by this port.
 
 ## Dependency sources and checksums
 

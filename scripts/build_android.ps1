@@ -87,6 +87,6 @@ try { Invoke-Checked '.\gradlew.bat' @(':app:assembleDebug', '--console=plain', 
 finally { Pop-Location }
 $artifactDirectory = Join-Path $repositoryRoot '..\artifacts'
 New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
-$apkPath = Join-Path $artifactDirectory "wiliwili-1.6.0-android-dev-$Abi.apk"
+$apkPath = Join-Path $artifactDirectory "wiliwili-1.6.0-android-hdr10-$Abi.apk"
 Copy-Item -LiteralPath "$repositoryRoot/android/app/build/outputs/apk/debug/app-debug.apk" -Destination $apkPath
 Get-FileHash -LiteralPath $apkPath -Algorithm SHA256

@@ -13,6 +13,7 @@
 #include "utils/number_helper.hpp"
 #include "utils/crash_helper.hpp"
 #include "view/mpv_core.hpp"
+#include "utils/android_video.hpp"
 
 #ifdef MPV_BUNDLE_DLL
 mpvSetOptionStringFunc mpvSetOptionString;
@@ -322,6 +323,9 @@ void MPVCore::init() {
     mpvSetOptionString(mpv, "hr-seek", "yes");
     mpvSetOptionString(mpv, "reset-on-next-file", "speed,pause");
     mpvSetOptionString(mpv, "vo", "libmpv");
+#ifdef __ANDROID__
+    androidHdrCapable = androidSupportsHdr10();
+#endif
     mpvSetOptionString(mpv, "pulse-latency-hacks", "no");
 
     mpvSetOption(mpv, "brightness", MPV_FORMAT_DOUBLE, &MPVCore::VIDEO_BRIGHTNESS);
@@ -517,6 +521,9 @@ void MPVCore::init() {
         static bool playing = false;
         static std::chrono::system_clock::time_point sleepTime{};
         if (focus) {
+#ifdef __ANDROID__
+            androidHasFocus = true;
+#endif
             // restore AUTO_PLAY
             AUTO_PLAY = ProgramConfig::instance().getBoolOption(SettingItem::PLAYER_AUTO_PLAY);
             // application is on top
@@ -529,6 +536,16 @@ void MPVCore::init() {
             playing   = isPlaying();
             sleepTime = std::chrono::system_clock::now();
             pause();
+#ifdef __ANDROID__
+            androidHasFocus = false;
+            if (androidNativeVideo) {
+                // Release MediaCodec's producer before SurfaceView is destroyed.
+                // A paused null VO keeps video-only files and playlists alive.
+                command_async("set", "vo", "null");
+                command_async("set", "hwdec", "no");
+                androidOutputSuspended = true;
+            }
+#endif
             // do not automatically play video
             AUTO_PLAY = false;
         }
@@ -537,6 +554,32 @@ void MPVCore::init() {
     brls::Application::getExitEvent()->subscribe([]() { disableDimming(false); });
 
     this->initializeVideo();
+#ifdef __ANDROID__
+    androidFrameSubscription = brls::Application::getRunLoopEvent()->subscribe([this]() {
+        if (!androidVideoDrawn && androidBoundsValid) {
+            androidSetVideoBounds(0, 0, 1, 1, 1, false, false);
+            androidBoundsValid = false;
+        }
+        androidVideoDrawn = false;
+        if (androidNativeVideo && androidHasFocus &&
+            (androidOutputSuspended || androidSurfaceVersion != androidVideoSurfaceGeneration())) {
+            // SurfaceView buffers are lost when the app goes into the background.
+            // Recreate the VO/decoder against the new Surface without replacing the playlist.
+            if (auto* surface = androidAcquireVideoSurface()) {
+                androidSurfaces.push_back(surface);
+                androidSurfaceVersion = androidVideoSurfaceGeneration();
+                command_async("set", "vo", "null");
+                command_async("set", "wid", reinterpret_cast<intptr_t>(surface));
+                command_async("set", "hwdec", "mediacodec");
+                command_async("set", "vo", "mediacodec_embed");
+                androidOutputSuspended = false;
+                androidBoundsValid = false;
+                androidVideoRotation = -1;
+                brls::Logger::info("Android HDR Surface restored");
+            }
+        }
+    });
+#endif
 }
 
 #ifdef MPV_BUNDLE_DLL
@@ -546,6 +589,10 @@ MPVCore::~MPVCore() = default;
 #endif
 
 void MPVCore::clean() {
+#ifdef __ANDROID__
+    brls::Application::getRunLoopEvent()->unsubscribe(androidFrameSubscription);
+    androidSetVideoBounds(0, 0, 1, 1, 1, false, false);
+#endif
     check_error(mpvCommandString(this->mpv, "quit"));
 
     brls::Application::getWindowFocusChangedEvent()->unsubscribe(focusSubscription);
@@ -564,6 +611,12 @@ void MPVCore::clean() {
         mpvTerminateDestroy(this->mpv);
         this->mpv = nullptr;
     }
+#ifdef __ANDROID__
+    for (auto* surface : androidSurfaces) androidReleaseVideoSurface(surface);
+    androidSurfaces.clear();
+    androidNativeVideo = false;
+    androidBoundsValid = false;
+#endif
 }
 
 void MPVCore::restart() {
@@ -787,6 +840,31 @@ bool MPVCore::isValid() { return mpv_context != nullptr; }
 
 void MPVCore::draw(brls::Rect area, float alpha) {
     if (mpv_context == nullptr) return;
+#ifdef __ANDROID__
+    if (androidNativeVideo && !video_stopped) {
+        androidVideoDrawn = true;
+        if (!androidBoundsValid || !(rect == area)) {
+            rect = area;
+            const float scale = brls::Application::windowScale;
+            float aspect = video_aspect > 0 ? video_aspect : androidVideoAspect;
+            androidSetVideoBounds(std::lround(area.getMinX() * scale), std::lround(area.getMinY() * scale),
+                std::lround(area.getWidth() * scale), std::lround(area.getHeight() * scale),
+                aspect, VIDEO_ASPECT == "-3", VIDEO_ASPECT == "-2");
+            androidBoundsValid = true;
+        }
+        // Erase only the video area from the SDR UI layer. Controls and danmaku
+        // are drawn afterwards; HDR pixels never pass through an 8-bit GL FBO.
+        auto* vg = brls::Application::getNVGContext();
+        nvgSave(vg);
+        nvgGlobalCompositeOperation(vg, NVG_COPY);
+        nvgBeginPath(vg);
+        nvgRect(vg, area.getMinX(), area.getMinY(), area.getWidth(), area.getHeight());
+        nvgFillColor(vg, nvgRGBAf(0, 0, 0, 1.0f - alpha));
+        nvgFill(vg);
+        nvgRestore(vg);
+        return;
+    }
+#endif
     if (!(this->rect == area)) setFrameSize(area);
 
 #ifdef MPV_SW_RENDER
@@ -959,8 +1037,48 @@ void MPVCore::eventMainLoop() {
                 brls::Logger::info("========> MPV_EVENT_PLAYBACK_RESTART");
                 video_stopped = false;
                 mpvCoreEvent.fire(MpvEventEnum::LOADING_END);
+#ifdef __ANDROID__
+                if (androidNativeVideo) {
+                    if (getString("current-vo") != "mediacodec_embed") {
+                        bool hasVideo = false;
+                        for (int64_t i = 0, count = getInt("track-list/count"); i < count; ++i)
+                            if (getString(fmt::format("track-list/{}/type", i)) == "video") hasVideo = true;
+                        if (hasVideo && retryAndroidSoftware()) break;
+                    }
+                    brls::Logger::info("Android Surface video: hwdec={}, transfer={}, primaries={}, format={}",
+                        getString("hwdec-current"), getString("video-params/gamma"),
+                        getString("video-params/primaries"), getString("video-out-params/pixelformat"));
+                }
+#endif
+                break;
+            case MPV_EVENT_VIDEO_RECONFIG:
+#ifdef __ANDROID__
+                if (androidNativeVideo) {
+                    double aspect = getDouble("video-params/aspect");
+                    int rotation = static_cast<int>(getInt("video-params/rotate"));
+                    if (aspect > 0) {
+                        if (rotation == 90 || rotation == 270) aspect = 1.0 / aspect;
+                        if (std::abs(androidVideoAspect - aspect) > 0.0001) {
+                            androidVideoAspect = aspect;
+                            androidBoundsValid = false;
+                        }
+                        if (rotation != androidVideoRotation) {
+                            if (!androidSetVideoRotation(androidSurfaces.back(), rotation)) {
+                                brls::Logger::warning("Native rotation unavailable; using SDR tone mapping");
+                                configureAndroidOutput(true);
+                            }
+                            androidVideoRotation = rotation;
+                            androidBoundsValid = false;
+                        }
+                    }
+                }
+#endif
                 break;
             case MPV_EVENT_END_FILE: {
+#ifdef __ANDROID__
+                auto* androidEnd = static_cast<mpv_event_end_file*>(event->data);
+                if (androidEnd->reason == MPV_END_FILE_REASON_ERROR && retryAndroidSoftware()) break;
+#endif
                 // event 7: 文件播放结束
                 brls::Logger::info("========> MPV_STOP");
                 mpvCoreEvent.fire(MpvEventEnum::MPV_STOP);
@@ -1174,7 +1292,57 @@ void MPVCore::reset() {
     setFrameSize(rect);
 }
 
+#ifdef __ANDROID__
+void MPVCore::configureAndroidOutput(bool forceSoftware) {
+    bool native = androidHdrCapable && HARDWARE_DEC && !forceSoftware && !androidNativeFailed &&
+        !VIDEO_MIRROR && currentShader.empty() && VIDEO_BRIGHTNESS == 0 && VIDEO_CONTRAST == 0 &&
+        VIDEO_SATURATION == 0 && VIDEO_HUE == 0 && VIDEO_GAMMA == 0;
+    if (native && androidSurfaces.empty()) {
+        auto* surface = androidAcquireVideoSurface();
+        if (surface) {
+            androidSurfaces.push_back(surface);
+            androidSurfaceVersion = androidVideoSurfaceGeneration();
+        } else native = false;
+    }
+    if (native) {
+        command_async("set", "wid", reinterpret_cast<intptr_t>(androidSurfaces.back()));
+        command_async("set", "hwdec", "mediacodec");
+        command_async("set", "vo", "mediacodec_embed");
+    } else {
+        command_async("set", "vo", "libmpv");
+        command_async("set", "hwdec", forceSoftware ? "no" : (HARDWARE_DEC ? "mediacodec-copy" : "no"));
+        androidSetVideoBounds(0, 0, 1, 1, 1, false, false);
+        setFrameSize(rect);
+    }
+    androidNativeVideo = native;
+    androidOutputSuspended = false;
+    androidBoundsValid = false;
+    androidVideoRotation = -1;
+    brls::Logger::info("Android video output: {}", native ? "MediaCodec Surface (HDR passthrough)" : "OpenGL (SDR tone mapping)");
+}
+
+bool MPVCore::retryAndroidSoftware() {
+    if (!androidNativeVideo || androidNativeFailed || androidCurrentUrl.empty()) return false;
+    androidNativeFailed = true;
+    brls::Logger::warning("Native video decoder/output failed; retrying with software decoding and SDR tone mapping");
+    configureAndroidOutput(true);
+    if (androidCurrentExtra.empty()) command_async("loadfile", androidCurrentUrl, "replace");
+    else if (mpvClientApiVersion() >= MPV_MAKE_VERSION(2, 3))
+        command_async("loadfile", androidCurrentUrl, "replace", "0", androidCurrentExtra);
+    else command_async("loadfile", androidCurrentUrl, "replace", androidCurrentExtra);
+    return true;
+}
+#endif
+
 void MPVCore::setUrl(const std::string &url, const std::string &extra, const std::string &method) {
+#ifdef __ANDROID__
+    if (method == "replace") {
+        androidNativeFailed = false;
+        androidCurrentUrl = url;
+        androidCurrentExtra = extra;
+        configureAndroidOutput();
+    }
+#endif
     brls::Logger::debug("{} Url: {}, extra: {}", method, url, extra);
     if (extra.empty()) {
         command_async("loadfile", url, method);
@@ -1205,7 +1373,13 @@ void MPVCore::resume() { command_async("set", "pause", "no"); }
 
 void MPVCore::pause() { command_async("set", "pause", "yes"); }
 
-void MPVCore::stop() { command_async("stop"); }
+void MPVCore::stop() {
+#ifdef __ANDROID__
+    androidSetVideoBounds(0, 0, 1, 1, 1, false, false);
+    androidBoundsValid = false;
+#endif
+    command_async("stop");
+}
 
 void MPVCore::seek(int64_t p) { command_async("seek", p, "absolute"); }
 
@@ -1228,6 +1402,9 @@ void MPVCore::setSpeed(double value) {
 }
 
 void MPVCore::setAspect(const std::string &value) {
+#ifdef __ANDROID__
+    androidBoundsValid = false;
+#endif
     MPVCore::VIDEO_ASPECT = value;
     video_aspect          = aspectConverter(MPVCore::VIDEO_ASPECT);
     if (value == "-2") {
@@ -1257,6 +1434,10 @@ void MPVCore::setMirror(bool value) {
 }
 
 void MPVCore::setHwdecCopyMode(bool value) {
+#ifdef __ANDROID__
+    if (value && androidNativeVideo) configureAndroidOutput(true);
+    if (androidNativeVideo) return;
+#endif
     // 如果正在使用硬解，那么将硬解更新为 auto-copy，避免直接硬解因为不经过 cpu 处理导致镜像翻转、滤镜无效
     if (MPVCore::HARDWARE_DEC) {
         std::string hwdec = value ? "auto-copy" : MPVCore::PLAYER_HWDEC_METHOD;
@@ -1269,6 +1450,9 @@ void MPVCore::setBrightness(int value) {
     if (value < -100) value = -100;
     if (value > 100) value = 100;
     MPVCore::VIDEO_BRIGHTNESS = value;
+#ifdef __ANDROID__
+    if (androidNativeVideo && value != 0) configureAndroidOutput(true);
+#endif
     if (video_brightness != value) command_async("set", "brightness", value);
 }
 
@@ -1276,6 +1460,9 @@ void MPVCore::setContrast(int value) {
     if (value < -100) value = -100;
     if (value > 100) value = 100;
     MPVCore::VIDEO_CONTRAST = value;
+#ifdef __ANDROID__
+    if (androidNativeVideo && value != 0) configureAndroidOutput(true);
+#endif
     if (video_contrast != value) command_async("set", "contrast", value);
 }
 
@@ -1283,6 +1470,9 @@ void MPVCore::setSaturation(int value) {
     if (value < -100) value = -100;
     if (value > 100) value = 100;
     MPVCore::VIDEO_SATURATION = value;
+#ifdef __ANDROID__
+    if (androidNativeVideo && value != 0) configureAndroidOutput(true);
+#endif
     if (video_saturation != value) command_async("set", "saturation", value);
 }
 
@@ -1290,6 +1480,9 @@ void MPVCore::setGamma(int value) {
     if (value < -100) value = -100;
     if (value > 100) value = 100;
     MPVCore::VIDEO_GAMMA = value;
+#ifdef __ANDROID__
+    if (androidNativeVideo && value != 0) configureAndroidOutput(true);
+#endif
     if (video_gamma != value) command_async("set", "gamma", value);
 }
 
@@ -1297,6 +1490,9 @@ void MPVCore::setHue(int value) {
     if (value < -100) value = -100;
     if (value > 100) value = 100;
     MPVCore::VIDEO_HUE = value;
+#ifdef __ANDROID__
+    if (androidNativeVideo && value != 0) configureAndroidOutput(true);
+#endif
     if (video_hue != value) command_async("set", "hue", value);
 }
 
@@ -1368,6 +1564,9 @@ void MPVCore::setShader(const std::string &profile, const std::string &shaders,
     currentShaderProfile = profile;
     currentShader        = shaders;
     currentSetting       = settings;
+#ifdef __ANDROID__
+    if (androidNativeVideo && (!shaders.empty() || !settings.empty())) configureAndroidOutput(true);
+#endif
 
     // 设置着色器
     if (!shaders.empty()) command_async("no-osd", "change-list", "glsl-shaders", "set", shaders);

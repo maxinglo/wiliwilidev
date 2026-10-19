@@ -6,6 +6,8 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.KeyEvent;
+import android.graphics.PixelFormat;
+import android.view.Surface;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 import android.util.Base64;
@@ -25,8 +27,10 @@ import javax.net.ssl.X509TrustManager;
 import org.libsdl.app.BorealisHandler;
 import org.libsdl.app.PlatformUtils;
 import org.libsdl.app.SDLActivity;
+import org.libsdl.app.SDLSurface;
 
 public class WiliwiliActivity extends SDLActivity {
+    private static VideoSurface videoSurface;
     private static native void nativeInitialize(Context context);
     private final Handler backHandler = new Handler(Looper.getMainLooper());
     private final Runnable releaseBack = () -> SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_BACK);
@@ -67,6 +71,20 @@ public class WiliwiliActivity extends SDLActivity {
     }
 
     @Override
+    protected SDLSurface createSDLSurface(Context context) {
+        SDLSurface controls = super.createSDLSurface(context);
+        controls.setZOrderMediaOverlay(true);
+        controls.getHolder().setFormat(PixelFormat.TRANSLUCENT);
+        return controls;
+    }
+
+    public static Surface getVideoSurface() { return videoSurface == null ? null : videoSurface.acquire(); }
+    public static boolean supportsHdr10() { return videoSurface != null && videoSurface.supportsHdr10(); }
+    public static void setVideoBounds(int x, int y, int w, int h, float aspect, boolean crop, boolean stretch) {
+        if (videoSurface != null) videoSurface.setBounds(x, y, w, h, aspect, crop, stretch);
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         PlatformUtils.borealisHandler = new BorealisHandler();
@@ -76,6 +94,7 @@ public class WiliwiliActivity extends SDLActivity {
             Log.e("wiliwili", "Unable to prepare Android certificate bundle", error);
         }
         nativeInitialize(getApplicationContext());
+        videoSurface = new VideoSurface(this, mLayout);
         if (Build.VERSION.SDK_INT >= 33) {
             backCallback = this::navigateBack;
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
