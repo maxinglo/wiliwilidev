@@ -306,6 +306,11 @@ void MPVCore::init() {
     // misc
     mpvSetOptionString(mpv, "config", "yes");
     mpvSetOptionString(mpv, "config-dir", confDir.c_str());
+#ifdef __ANDROID__
+    // The prebuilt mpv/curl does not discover Android's system trust store.
+    // WiliwiliActivity exports the platform-trusted issuers before SDL starts.
+    mpvSetOptionString(mpv, "tls-ca-file", (confDir + "/cacert.pem").c_str());
+#endif
     mpvSetOptionString(mpv, "gpu-shader-cache-dir", fmt::format("{}/cache", confDir).c_str());
     mpvSetOptionString(mpv, "ytdl", "no");
     mpvSetOptionString(mpv, "audio-channels", "stereo");

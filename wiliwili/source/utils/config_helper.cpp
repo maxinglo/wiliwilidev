@@ -2,7 +2,11 @@
 // Created by fang on 2022/7/10.
 //
 
-#ifdef IOS
+#if defined(__ANDROID__)
+#include <SDL2/SDL.h>
+#include <unistd.h>
+#include <borealis/platforms/desktop/desktop_platform.hpp>
+#elif defined(IOS)
 #include <CoreFoundation/CoreFoundation.h>
 #elif defined(__APPLE__) || defined(__linux__) || defined(_WIN32)
 #include <unistd.h>
@@ -13,6 +17,7 @@
 #endif
 
 #include <cmath>
+#include <stdexcept>
 #include <borealis/core/application.hpp>
 #include <borealis/core/cache_helper.hpp>
 #include <borealis/core/touch/pan_gesture.hpp>
@@ -172,7 +177,7 @@ std::unordered_map<SettingItem, ProgramOption> ProgramConfig::SETTING_MAP = {
     /// bool
     {SettingItem::APP_SWAP_ABXY, {"app_swap_abxy", {}, {}, 0}},
     {SettingItem::GAMEPAD_VIBRATION, {"gamepad_vibration", {}, {}, 1}},
-#if defined(IOS) || defined(__PSV__)
+#if defined(IOS) || defined(__ANDROID__) || defined(__PSV__)
     {SettingItem::HIDE_BOTTOM_BAR, {"hide_bottom_bar", {}, {}, 1}},
 #else
     {SettingItem::HIDE_BOTTOM_BAR, {"hide_bottom_bar", {}, {}, 0}},
@@ -192,7 +197,7 @@ std::unordered_map<SettingItem, ProgramOption> ProgramConfig::SETTING_MAP = {
     {SettingItem::PLAYER_HIGHLIGHT_BAR, {"player_highlight_bar", {}, {}, 0}},
     {SettingItem::PLAYER_SKIP_OPENING_CREDITS, {"player_skip_opening_credits", {}, {}, 1}},
     {SettingItem::PLAYER_LOW_QUALITY, {"player_low_quality", {}, {}, 1}},
-#if defined(IOS) || defined(__PSV__) || defined(__SWITCH__)
+#if defined(IOS) || defined(__ANDROID__) || defined(__PSV__) || defined(__SWITCH__)
     {SettingItem::PLAYER_HWDEC, {"player_hwdec", {}, {}, 1}},
 #else
     {SettingItem::PLAYER_HWDEC, {"player_hwdec", {}, {}, 0}},
@@ -1123,7 +1128,9 @@ void ProgramConfig::init() {
 }
 
 std::string ProgramConfig::getHomePath() {
-#if defined(__SWITCH__)
+#if defined(__ANDROID__)
+    return getConfigDir();
+#elif defined(__SWITCH__)
     return "/";
 #elif defined(_WIN32)
     return std::string(getenv("HOMEPATH"));
@@ -1133,7 +1140,11 @@ std::string ProgramConfig::getHomePath() {
 }
 
 std::string ProgramConfig::getConfigDir() {
-#ifdef __SWITCH__
+#ifdef __ANDROID__
+    const char* storage = SDL_AndroidGetInternalStoragePath();
+    if (!storage) throw std::runtime_error("Android internal storage is unavailable");
+    return std::string(storage) + "/wiliwili";
+#elif defined(__SWITCH__)
     return "/config/wiliwili";
 #elif defined(PS4)
     return "/data/wiliwili";
@@ -1187,7 +1198,7 @@ void ProgramConfig::exit(char* argv[]) {
 #ifdef _WIN32
     WSACleanup();
 #endif
-#ifdef IOS
+#if defined(IOS) || defined(__ANDROID__)
 #elif defined(PS4)
 #elif __PSV__
 #elif defined(__APPLE__) || defined(__linux__) || defined(_WIN32)

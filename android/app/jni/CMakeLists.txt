@@ -1,0 +1,46 @@
+cmake_minimum_required(VERSION 3.22)
+project(wiliwili_android LANGUAGES C CXX)
+
+get_filename_component(WILIWILI_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
+set(BOREALIS_ROOT "${WILIWILI_ROOT}/library/borealis")
+set(SDL_ROOT "${BOREALIS_ROOT}/library/lib/extern/SDL")
+set(MPV_ANDROID_ROOT "" CACHE PATH "mpv Android headers and lib/<abi> libraries")
+set(ANDROID_DEPS_PREFIX "" CACHE PATH "Android curl and mbedTLS install prefix")
+
+if(NOT EXISTS "${MPV_ANDROID_ROOT}/lib/${ANDROID_ABI}/libmpv.so")
+    message(FATAL_ERROR "Set MPV_ANDROID_ROOT to the prepared mpv-android dependencies")
+endif()
+list(PREPEND CMAKE_PREFIX_PATH "${ANDROID_DEPS_PREFIX}")
+list(PREPEND CMAKE_FIND_ROOT_PATH "${ANDROID_DEPS_PREFIX}")
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
+set(SDL_SHARED ON CACHE BOOL "" FORCE)
+set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+set(SDL_TEST OFF CACHE BOOL "" FORCE)
+# SDL 2.28's sensor backend uses ALooper_pollAll, removed by NDK r27.
+# wiliwili handles touch/gamepads and does not use motion sensors.
+set(SDL_SENSOR OFF CACHE BOOL "" FORCE)
+set(SDL2_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
+add_subdirectory("${SDL_ROOT}" SDL)
+# borealis uses SDL2-prefixed includes on all platforms.
+file(COPY "${SDL_ROOT}/include/" DESTINATION "${CMAKE_BINARY_DIR}/include/SDL2")
+include_directories("${CMAKE_BINARY_DIR}/include")
+
+foreach(lib mpv avcodec)
+    add_library(android_${lib} SHARED IMPORTED)
+    set_target_properties(android_${lib} PROPERTIES
+        IMPORTED_LOCATION "${MPV_ANDROID_ROOT}/lib/${ANDROID_ABI}/lib${lib}.so")
+endforeach()
+set(PLATFORM_ANDROID ON CACHE BOOL "" FORCE)
+set(APP_PLATFORM_CUSTOM_LIBS ON CACHE BOOL "" FORCE)
+set(APP_PLATFORM_INCLUDE "${MPV_ANDROID_ROOT}/include")
+set(APP_PLATFORM_LIB android_mpv android_avcodec android log)
+set(USE_SYSTEM_CURL ON CACHE BOOL "" FORCE)
+set(CPR_FORCE_MBEDTLS_BACKEND ON CACHE BOOL "" FORCE)
+set(DISABLE_OPENCC ON CACHE BOOL "" FORCE)
+set(DISABLE_WEBP ON CACHE BOOL "" FORCE)
+set(BRLS_UNITY_BUILD ON CACHE BOOL "" FORCE)
+add_subdirectory("${WILIWILI_ROOT}" wiliwili)
+target_sources(wiliwili PRIVATE android_bridge.cpp)
+target_link_options(wiliwili PRIVATE "-Wl,-z,max-page-size=16384")

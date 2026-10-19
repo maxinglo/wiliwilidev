@@ -1,0 +1,46 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'cn.xfangfang.wiliwili'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'cn.xfangfang.wiliwili'
+        minSdk 23
+        targetSdk 36
+        versionCode 1060001
+        versionName '1.6.0-android-dev'
+        ndk {
+            abiFilters.addAll(providers.gradleProperty('androidAbis').getOrElse('arm64-v8a').split(',').toList())
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+    sourceSets.main {
+        java.srcDirs += [
+            '../../library/borealis/android-project/app/src/main/java/org'
+        ]
+    }
+    packaging {
+        jniLibs.useLegacyPackaging = true
+    }
+}
+
+tasks.register('checkNativeLibraries') {
+    doLast {
+        def abis = providers.gradleProperty('androidAbis').getOrElse('arm64-v8a').split(',')
+        abis.each { abi ->
+            ['libwiliwili.so', 'libSDL2.so', 'libmpv.so', 'libavcodec.so', 'libc++_shared.so'].each { library ->
+                if (!file("src/main/jniLibs/${abi}/${library}").exists()) {
+                    throw new GradleException("Missing ${abi}/${library}. Run scripts/build_android.ps1 first.")
+                }
+            }
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn 'checkNativeLibraries' }

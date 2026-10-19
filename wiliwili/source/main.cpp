@@ -15,7 +15,7 @@
 #include "utils/activity_helper.hpp"
 #include "view/mpv_core.hpp"
 
-#ifdef IOS
+#if defined(IOS) || defined(__ANDROID__)
 #include <SDL2/SDL_main.h>
 #endif
 
