@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cpr/cpr.h>
+#include <atomic>
 #include <ctime>
 #include <random>
 #include <unordered_map>
@@ -105,7 +106,7 @@ protected:
     void clean();
 
 private:
-    bool isCancel{};
+    std::atomic<bool> isCancel{false};
     brls::Image* imageView;
     std::string imageUrl;
     Pool::iterator currentIter;
@@ -120,4 +121,9 @@ private:
     /// 请求队列，可复用其中的 ImageHelper
     inline static Pool requestPool;
     inline static std::mutex requestMutex;
+#ifdef WILIWILI_UWP_HDR
+    inline static std::unordered_map<std::string, std::vector<ImageHelper*>> pendingImages;
+    bool hasImageConsumers();
+    void completeSharedImage(uint8_t* data, int width, int height, bool isWebp);
+#endif
 };

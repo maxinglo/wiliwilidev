@@ -7,6 +7,7 @@
 #include <borealis/core/cache_helper.hpp>
 #include <borealis/core/thread.hpp>
 #include <stb_image.h>
+#include <algorithm>
 
 #include "utils/image_helper.hpp"
 #include "utils/string_helper.hpp"
@@ -117,11 +118,30 @@ private:
 
 ImageHelper::ImageHelper(brls::Image* view) : imageView(view) {}
 
+static std::string imageCacheKey(std::string url) {
+#ifdef WILIWILI_UWP_HDR
+    // Bilibili returns the same avatar object on several equivalent CDN hosts.
+    // Keep the requested URL for networking and share only the texture/job key.
+    const auto hostStart = url.find("://");
+    if (hostStart != std::string::npos && url.find("/bfs/face/") != std::string::npos) {
+        const auto begin = hostStart + 3;
+        const auto end = url.find('/', begin);
+        const auto host = url.substr(begin, end - begin);
+        if (host == "i0.hdslb.com" || host == "i1.hdslb.com" || host == "i2.hdslb.com") url.replace(begin, host.size(), "i0.hdslb.com");
+    }
+#endif
+    return url;
+}
+
 ImageHelper::~ImageHelper() { brls::Logger::verbose("delete ImageHelper {}", (size_t)this); }
 
 std::shared_ptr<ImageHelper> ImageHelper::with(brls::Image* view) {
     std::lock_guard<std::mutex> lock(requestMutex);
     std::shared_ptr<ImageHelper> item;
+#ifdef WILIWILI_UWP_HDR
+    const auto previous = requestMap.find(view);
+    if (previous != requestMap.end() && (*previous->second)->imageView == view) (*previous->second)->cancel();
+#endif
 
     if (!requestPool.empty() && (*requestPool.begin())->getImageView() == nullptr) {
         // 复用请求，挪到队尾
@@ -151,6 +171,11 @@ std::shared_ptr<ImageHelper> ImageHelper::with(brls::Image* view) {
 
 void ImageHelper::load(const std::string &url) {
     this->imageUrl = bilibili::HTTP::VERIFY.verify ? url :pystring::replace(url, "https", "http", 1);
+#ifdef WILIWILI_UWP_HDR
+    if (this->imageUrl.rfind("//", 0) == 0) this->imageUrl = "https:" + this->imageUrl;
+    if (bilibili::HTTP::VERIFY.verify && this->imageUrl.rfind("http:", 0) == 0)
+        this->imageUrl.replace(0, 5, "https:");
+#endif
 
 #ifdef BOREALIS_USE_GXM
     std::vector<std::string> urls = pystring::rsplit(this->imageUrl, "@", 1);
@@ -166,25 +191,45 @@ void ImageHelper::load(const std::string &url) {
     //    std::unique_lock<std::mutex> lock(this->loadingMutex);
 
     // 检查是否存在缓存
-    int tex = brls::TextureCache::instance().getCache(this->imageUrl);
+    int tex = brls::TextureCache::instance().getCache(imageCacheKey(this->imageUrl));
     if (tex > 0) {
         brls::Logger::verbose("cache hit: {}", this->imageUrl);
+#ifdef WILIWILI_UWP_HDR
+        brls::TextureCache::instance().removeCache(this->imageView->getTexture());
+#endif
         this->imageView->innerSetImage(tex);
         this->clean();
         return;
     }
 
-    //todo: 可能会发生同时请求多个重复链接的情况，此种情况下最好合并为一个请求
+#ifdef WILIWILI_UWP_HDR
+    {
+        std::lock_guard lock(requestMutex);
+        auto& consumers = pendingImages[imageCacheKey(this->imageUrl)];
+        consumers.push_back(this);
+        if (consumers.size() > 1) {
+            brls::Logger::info("Xbox image shared request: {} consumers", consumers.size());
+            return;
+        }
+    }
+#endif
 
     // 缓存网络图片
-    brls::Logger::verbose("request Image 1: {} {}", this->imageUrl, this->isCancel);
+    brls::Logger::verbose("request Image 1: {} {}", this->imageUrl, this->isCancel.load());
     ImageThreadPool::instance().Submit([this]() {
         brls::Logger::verbose("Submit view: {} {} {} {}", (size_t)this->imageView, (size_t)this, this->imageUrl,
-                              this->isCancel);
+                              this->isCancel.load());
+#ifdef WILIWILI_UWP_HDR
+        if (!hasImageConsumers()) {
+            brls::sync([this]() { completeSharedImage(nullptr, 0, 0, false); });
+            return;
+        }
+#else
         if (this->isCancel) {
             this->clean();
             return;
         }
+#endif
         this->requestImage();
     });
 }
@@ -199,8 +244,48 @@ static inline void freeImageData(uint8_t* imageData, bool isWebp) {
         stbi_image_free(imageData);
 }
 
+#ifdef WILIWILI_UWP_HDR
+bool ImageHelper::hasImageConsumers() {
+    std::lock_guard lock(requestMutex);
+    const auto found = pendingImages.find(imageCacheKey(imageUrl));
+    return found != pendingImages.end() && std::any_of(found->second.begin(), found->second.end(),
+        [](const auto* consumer) { return !consumer->isCancel.load(); });
+}
+
+void ImageHelper::completeSharedImage(uint8_t* data, int width, int height, bool isWebp) {
+    std::vector<ImageHelper*> consumers;
+    const std::string url = imageCacheKey(imageUrl);
+    {
+        std::lock_guard lock(requestMutex);
+        const auto found = pendingImages.find(url);
+        if (found != pendingImages.end()) { consumers = std::move(found->second); pendingImages.erase(found); }
+    }
+    int tex = 0;
+    if (std::any_of(consumers.begin(), consumers.end(), [](const auto* item) { return !item->isCancel.load(); })) {
+        auto& cache = brls::TextureCache::instance();
+        tex = cache.getCache(url);
+        if (tex <= 0 && data) {
+            tex = nvgCreateImageRGBA(brls::Application::getNVGContext(), width, height, 0, data);
+            if (tex > 0) cache.addCache(url, tex);
+        }
+    }
+    bool assigned = false;
+    for (auto* consumer : consumers) {
+        if (!consumer->isCancel && tex > 0) {
+            auto& cache = brls::TextureCache::instance();
+            if (assigned) cache.getCache(url);
+            cache.removeCache(consumer->imageView->getTexture());
+            consumer->imageView->innerSetImage(tex);
+            assigned = true;
+        }
+        consumer->clean();
+    }
+    freeImageData(data, isWebp);
+}
+#endif
+
 void ImageHelper::requestImage() {
-    brls::Logger::verbose("request Image 2: {} {}", this->imageUrl, this->isCancel);
+    brls::Logger::verbose("request Image 2: {} {}", this->imageUrl, this->isCancel.load());
 
     // 请求图片
     cpr::Session session;
@@ -211,16 +296,39 @@ void ImageHelper::requestImage() {
     session.SetConnectTimeout(cpr::ConnectTimeout{bilibili::HTTP::CONNECTION_TIMEOUT});
     session.SetVerifySsl(bilibili::HTTP::VERIFY);
     session.SetProxies(bilibili::HTTP::PROXIES);
+    session.SetHeader(bilibili::HTTP::HEADERS);
     session.SetUrl(cpr::Url{this->imageUrl});
+#ifdef WILIWILI_UWP_HDR
+    session.SetProgressCallback(cpr::ProgressCallback([this](...) -> bool { return hasImageConsumers(); }));
+#else
     session.SetProgressCallback(cpr::ProgressCallback([this](...) -> bool { return !this->isCancel; }));
+#endif
     cpr::Response r = session.Get();
+#ifdef WILIWILI_UWP_HDR
+    if (hasImageConsumers() && (r.status_code == 0 || r.status_code == 408 || r.status_code >= 500)) {
+        if (r.status_code == 0) curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+        r = session.Get();
+    }
+#endif
 
     // 图片请求失败或取消请求
-    if (r.status_code != 200 || r.downloaded_bytes == 0 || this->isCancel) {
-        brls::Logger::verbose("request undone: {} {} {} {}", r.status_code, r.downloaded_bytes, this->isCancel,
+    if (r.status_code != 200 || r.downloaded_bytes == 0 ||
+#ifdef WILIWILI_UWP_HDR
+        !hasImageConsumers()
+#else
+        this->isCancel
+#endif
+        ) {
+#ifdef WILIWILI_UWP_HDR
+        if (hasImageConsumers()) brls::Logger::warning("Xbox image request failed: HTTP {}, {}: {}",
+            r.status_code, r.error.message, this->imageUrl.substr(0, this->imageUrl.find('?')));
+        brls::sync([this]() { completeSharedImage(nullptr, 0, 0, false); });
+#else
+        brls::Logger::verbose("request undone: {} {} {} {}", r.status_code, r.downloaded_bytes, this->isCancel.load(),
                               r.url.str());
 
         this->clean();
+#endif
         return;
     }
 
@@ -257,12 +365,16 @@ void ImageHelper::requestImage() {
     }
 #endif
 
+#ifdef WILIWILI_UWP_HDR
+    brls::sync([this, imageData, imageW, imageH, isWebp]() { completeSharedImage(imageData, imageW, imageH, isWebp); });
+#else
     brls::sync([this, r, imageData, imageW, imageH, isWebp]() {
         // 再检查一遍缓存
         int tex = brls::TextureCache::instance().getCache(this->imageUrl);
         if (tex > 0) {
             brls::Logger::verbose("cache hit 2: {}", this->imageUrl);
-            this->imageView->innerSetImage(tex);
+            if (!this->isCancel) this->imageView->innerSetImage(tex);
+            else brls::TextureCache::instance().removeCache(tex);
         } else {
             NVGcontext* vg = brls::Application::getNVGContext();
             if (imageData) {
@@ -293,10 +405,15 @@ void ImageHelper::requestImage() {
         }
         this->clean();
     });
+#endif
 }
 
 void ImageHelper::clean() {
     std::lock_guard<std::mutex> lock(requestMutex);
+#ifdef WILIWILI_UWP_HDR
+    const auto request = requestMap.find(imageView);
+    if (request != requestMap.end() && request->second == currentIter) requestMap.erase(request);
+#endif
 
     // 允许图片组件销毁
     if (this->imageView) this->imageView->ptrUnlock();

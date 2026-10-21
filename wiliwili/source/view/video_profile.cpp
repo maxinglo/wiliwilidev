@@ -15,6 +15,27 @@ VideoProfile::VideoProfile() {
 
 void VideoProfile::update() {
     auto mpvCore = &MPVCore::instance();
+#ifdef WILIWILI_UWP_HDR
+    if (const auto native = mpvCore->getUwpMediaInfo()) {
+        labelUrl->setText(mpvCore->filepath);
+        labelSize->setText("系统未公开");
+        labelFormat->setText(native->format + " / " + native->output);
+        const auto buffering = native->bufferingProgress < 0 ? "缓冲统计未公开" : fmt::format("缓冲进度 {:.0f}%", native->bufferingProgress * 100);
+        labelCache->setText(fmt::format("{} / 最近下载 {:.0f} kbps", buffering, native->downloadBitrate / 1000.0));
+        labelVideoRes->setText(fmt::format("{} x {} @ {:.3f} fps（标称）", native->width, native->height, native->fps));
+        labelVideoCodec->setText(native->videoCodec.empty() ? "系统未公开" : native->videoCodec);
+        labelVideoPixel->setText("系统管理（HDR 10-bit）");
+        labelVideoHW->setText("Windows Media Foundation / Xbox");
+        labelVideoBitrate->setText(fmt::format("{:.0f} kbps（码流标称）", native->videoBitrate / 1000.0));
+        labelVideoDrop->setText("系统未公开");
+        labelVideoSync->setText("系统未公开");
+        labelAudioCodec->setText(native->audioCodec.empty() ? "系统未公开" : native->audioCodec);
+        labelAudioChannel->setText(native->audioChannels ? std::to_string(native->audioChannels) : "系统未公开");
+        labelAudioSampleRate->setText(native->audioSampleRate ? fmt::format("{:.1f} kHz", native->audioSampleRate / 1000.0) : "系统未公开");
+        labelAudioBitrate->setText(fmt::format("{:.0f} kbps（码流标称）", native->audioBitrate / 1000.0));
+        return;
+    }
+#endif
 
     // file
     if (mpvCore->filepath != labelUrl->getFullText()) labelUrl->setText(mpvCore->filepath);

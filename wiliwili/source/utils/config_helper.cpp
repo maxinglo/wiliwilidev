@@ -12,6 +12,10 @@
 #endif
 #endif
 
+#ifdef WILIWILI_UWP_HDR
+#include <winrt/Windows.Storage.h>
+#endif
+
 #include <cmath>
 #include <borealis/core/application.hpp>
 #include <borealis/core/cache_helper.hpp>
@@ -211,12 +215,13 @@ std::unordered_map<SettingItem, ProgramOption> ProgramConfig::SETTING_MAP = {
     {SettingItem::DANMAKU_FILTER_ADVANCED, {"danmaku_filter_advanced", {}, {}, 0}},
     {SettingItem::DANMAKU_SMART_MASK, {"danmaku_smart_mask", {}, {}, 1}},
     {SettingItem::SEARCH_TV_MODE, {"search_tv_mode", {}, {}, 1}},
+    {SettingItem::PLAYER_HIGHLIGHT_TRANSITION, {"player_highlight_transition", {}, {}, 0}},
     {SettingItem::HTTP_PROXY_STATUS, {"http_proxy_status", {}, {}, 0}},
     {SettingItem::TLS_VERIFY,
      {"tls_verify",
       {},
       {},
-#if defined(__PSV__) || defined(__SWITCH__) || defined(PS4)
+#if defined(__PSV__) || defined(__SWITCH__) || defined(PS4) || defined(__WINRT__)
       0}},
 #else
       1}},
@@ -278,7 +283,12 @@ std::unordered_map<SettingItem, ProgramOption> ProgramConfig::SETTING_MAP = {
      {"danmaku_style_speed", {"0.5", "0.75", "1.0", "1.25", "1.5"}, {150, 125, 100, 75, 50}, 2}},
     {SettingItem::DANMAKU_RENDER_QUALITY,
      {"danmaku_render_quality", {"100%", "95%", "90%", "80%", "70%", "60%", "50%"}, {100, 95, 90, 80, 70, 60, 50}, 0}},
-    {SettingItem::LIMITED_FPS, {"limited_fps", {"0", "30", "60", "90", "120"}, {0, 30, 60, 90, 120}, 0}},
+    {SettingItem::LIMITED_FPS, {"limited_fps", {"0", "30", "60", "90", "120"}, {0, 30, 60, 90, 120},
+#ifdef WILIWILI_UWP_HDR
+        4}},
+#else
+        0}},
+#endif
     {SettingItem::SWAP_INTERVAL, {"swap_interval", {"0", "1", "2", "3", "4"}, {0, 1, 2, 3, 4}, 1}},
     {SettingItem::DEACTIVATED_TIME, {"deactivated_time", {}, {}, 0}},
     {SettingItem::DEACTIVATED_FPS, {"deactivated_fps", {}, {}, 0}},
@@ -640,6 +650,9 @@ void ProgramConfig::load() {
     // 初始化是否固定显示底部高能进度条
     VideoView::HIGHLIGHT_PROGRESS_BAR = getBoolOption(SettingItem::PLAYER_HIGHLIGHT_BAR);
 
+    // 初始化焦点高亮过渡动画
+    brls::View::enableHighlightTransition(getBoolOption(SettingItem::PLAYER_HIGHLIGHT_TRANSITION));
+
     // 初始化是否使用硬件加速
 #if defined(__PSV__) && defined(BOREALIS_USE_OPENGL)
     MPVCore::HARDWARE_DEC = true;
@@ -698,9 +711,12 @@ void ProgramConfig::load() {
 #endif
 
     // 初始化FPS限制
-    int limitedFPS = getSettingItem(SettingItem::LIMITED_FPS, 0);
+    int limitedFPS = getIntOption(SettingItem::LIMITED_FPS);
     brls::Application::setLimitedFPS(limitedFPS);
     VideoContext::swapInterval = limitedFPS == 0 ? getSettingItem(SettingItem::SWAP_INTERVAL, 1) : 0;
+#ifdef WILIWILI_UWP_HDR
+    brls::Logger::info("Xbox UI frame pacing: limit={}, vsync={}", limitedFPS, VideoContext::swapInterval);
+#endif
 
     // 初始化进入闲置状态需要的时间 (ms);
     int deactivatedTime = getSettingItem(SettingItem::DEACTIVATED_TIME, 0);
@@ -1129,7 +1145,9 @@ std::string ProgramConfig::getHomePath() {
 }
 
 std::string ProgramConfig::getConfigDir() {
-#ifdef __SWITCH__
+#ifdef WILIWILI_UWP_HDR
+    return winrt::to_string(winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()) + "/wiliwili";
+#elif defined(__SWITCH__)
     return "/config/wiliwili";
 #elif defined(PS4)
     return "/data/wiliwili";
@@ -1183,7 +1201,7 @@ void ProgramConfig::exit(char* argv[]) {
 #ifdef _WIN32
     WSACleanup();
 #endif
-#ifdef IOS
+#if defined(IOS) || defined(__WINRT__)
 #elif defined(PS4)
 #elif __PSV__
 #elif defined(__APPLE__) || defined(__linux__) || defined(_WIN32)

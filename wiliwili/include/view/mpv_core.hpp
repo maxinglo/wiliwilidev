@@ -58,6 +58,12 @@ struct GLShader {
 #endif
 
 #include "utils/event_helper.hpp"
+#ifdef WILIWILI_UWP_HDR
+#include "utils/uwp_player.hpp"
+#include "utils/uwp_media_controls.hpp"
+#include "utils/frame_pacing.hpp"
+namespace bilibili { class DashMedia; }
+#endif
 
 #ifdef MPV_BUNDLE_DLL
 #include <MemoryModule.h>
@@ -184,6 +190,13 @@ public:
      * @param extra 额外的参数，定义同上
      */
     void setBackupUrl(const std::string &url, const std::string &extra = "");
+#ifdef WILIWILI_UWP_HDR
+    bool supportsUwpQuality(int quality) const;
+    std::optional<wiliwili::UwpMediaInfo> getUwpMediaInfo() const;
+    void setUwpMediaMetadata(const std::string& title, const std::string& artist, const std::string& artwork);
+    void setUwpDash(const bilibili::DashMedia& video, const bilibili::DashMedia* audio,
+                    double duration, int start, int end);
+#endif
 
     void setVolume(int64_t value);
     void setVolume(const std::string &value);
@@ -399,6 +412,19 @@ public:
     inline static double VIDEO_GAMMA      = 0;
 
 private:
+#ifdef WILIWILI_UWP_HDR
+    std::unique_ptr<wiliwili::UwpVideoPlayer> uwpVideo;
+    bool setUwpTransparentPresentation(bool enabled);
+    std::unique_ptr<wiliwili::UwpMediaControls> uwpMediaControls;
+    brls::Event<>::Subscription uwpFrameSubscription;
+    bool uwpDrawn = false;
+    bool uwpBuffering = false;
+    double uwpUiFrameRate = -1;
+    double uwpUiVideoRate = 0;
+    int uwpUiSwapInterval = -1;
+    void updateUwpFrameRate();
+    void pollUwpVideo();
+#endif
     mpv_handle *mpv                 = nullptr;
     mpv_render_context *mpv_context = nullptr;
     brls::Rect rect                 = {0, 0, 1920, 1080};

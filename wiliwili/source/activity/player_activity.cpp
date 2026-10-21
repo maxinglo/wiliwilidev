@@ -221,6 +221,9 @@ void PlayerActivity::onVideoInfo(const bilibili::VideoDetailResult& result) {
     // videoView osd
     std::string title = result.title + subtitle;
     APP_E->fire(VideoView::SET_TITLE, (void*)title.c_str());
+#ifdef WILIWILI_UWP_HDR
+    MPVCore::instance().setUwpMediaMetadata(title, result.owner.name, result.pic);
+#endif
 
     // video title
     this->videoTitleLabel->setText(result.title);
@@ -497,6 +500,9 @@ void PlayerActivity::onIndexChange(size_t index) {
     // 设置播放器标题
     std::string title = fmt::format("{} - {}", videoDetailResult.title, videoDetailPage.part);
     APP_E->fire(VideoView::SET_TITLE, (void*)title.c_str());
+#ifdef WILIWILI_UWP_HDR
+    MPVCore::instance().setUwpMediaMetadata(title, videoDetailResult.owner.name, videoDetailResult.pic);
+#endif
     // 允许加载历史记录
     this->setProgress(0);
     this->video->setLastPlayedPosition(VideoView::POSITION_UNDEFINED);

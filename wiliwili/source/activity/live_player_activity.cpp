@@ -233,6 +233,9 @@ void LiveActivity::onContentAvailable()
     
     this->video->setTitle(liveData.title);
     this->video->setStatusLabelLeft("");
+#ifdef WILIWILI_UWP_HDR
+    MPVCore::instance().setUwpMediaMetadata(liveData.title, liveData.uname, liveData.cover);
+#endif
     this->video->setCustomToggleAction([this]() {
         if (MPVCore::instance().isStopped()) {
             this->onLiveData(this->liveRoomPlayInfo);
@@ -330,6 +333,9 @@ void LiveActivity::onLiveData(const bilibili::LiveRoomPlayInfo &result)
     // 设置视频标题、在线人数和主播信息
     this->video->setTitle(liveData.title);
     this->video->setOnlineCount(liveData.watched_show.text_large);
+#ifdef WILIWILI_UWP_HDR
+    MPVCore::instance().setUwpMediaMetadata(liveData.title, liveData.uname, liveData.cover);
+#endif
 
     // 获取主播信息
     this->requestLiveAnchorInfo(liveData.roomid);
@@ -899,6 +905,9 @@ void LiveActivity::onAnchorInfo(const std::string& face, const std::string& unam
     // 更新标题
     if (this->video) {
         this->video->setTitle(liveData.title);
+#ifdef WILIWILI_UWP_HDR
+        MPVCore::instance().setUwpMediaMetadata(liveData.title, liveData.uname, liveData.cover);
+#endif
     }
     
     // 同时更新侧边栏标题（如果存在）

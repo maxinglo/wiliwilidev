@@ -94,7 +94,7 @@ void APPVersion::checkUpdate(int delay, bool showUpToDateDialog) {
         std::string url =
             ProgramConfig::instance().getSettingItem(SettingItem::CUSTOM_UPDATE_API, APPVersion::RELEASE_API);
 
-        cpr::GetCallback(
+        auto callback =
             [showUpToDateDialog](cpr::Response r) {
                 checking_update = false;
                 try {
@@ -136,7 +136,16 @@ void APPVersion::checkUpdate(int delay, bool showUpToDateDialog) {
                 } catch (const std::exception& e) {
                     brls::Logger::error("check update failed: {} {} {}", r.status_code, r.text.c_str(), e.what());
                 }
-            },
+            };
+#ifdef WILIWILI_UWP_HDR
+        auto session = bilibili::HTTP::createSession();
+        session->SetHeader(cpr::Header{});
+        session->SetUrl(cpr::Url{url});
+        session->SetTimeout(cpr::Timeout{10000});
+        session->GetCallback(callback);
+#else
+        cpr::GetCallback(callback,
             bilibili::HTTP::VERIFY, bilibili::HTTP::PROXIES, cpr::Url{url}, cpr::Timeout{10000});
+#endif
     });
 }

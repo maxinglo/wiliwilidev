@@ -467,6 +467,26 @@ void BasePlayerActivity::setVideoQuality() {
         "wiliwili/player/quality"_i18n,
         [this](int selected) {
             int code                           = this->videoUrlResult.accept_quality[selected];
+#ifdef WILIWILI_UWP_HDR
+            if (!MPVCore::instance().supportsUwpQuality(code)) {
+                brls::Application::notify("Xbox 或电视未开启此 HDR 格式");
+                return;
+            }
+            if (code == 125 || code == 126) {
+                const bilibili::DashMedia* unsupported = nullptr;
+                bool compatible = false;
+                for (const auto& track : this->videoUrlResult.dash.video) {
+                    if (track.id != code) continue;
+                    if (wiliwili::compatibleXboxHdrStream(code, track.width, track.height)) compatible = true;
+                    else unsupported = &track;
+                }
+                if (unsupported && !compatible) {
+                    DialogHelper::showDialog(fmt::format("此分P的{}码流为 {}×{}（{}），超出当前 Xbox 播放路径支持的尺寸。请选择兼容分P或普通画质。",
+                        code == 126 ? "杜比视界" : "HDR", unsupported->width, unsupported->height, unsupported->codecs));
+                    return;
+                }
+            }
+#endif
 #ifdef __PSV__
             if (code > 64) {
                 code = 64;
@@ -598,7 +618,17 @@ void BasePlayerActivity::onVideoPlayUrl(const bilibili::VideoUrlResult& result) 
         brls::Logger::debug("Video type: dash");
 
         // 找到当前可用的清晰度
+#ifdef WILIWILI_UWP_HDR
+        bool skippedWideDolby = false;
+#endif
         for (const auto& i : result.dash.video) {
+#ifdef WILIWILI_UWP_HDR
+            if (!MPVCore::instance().supportsUwpQuality(i.id)) continue;
+            if (!wiliwili::compatibleXboxHdrStream(i.id, i.width, i.height)) {
+                skippedWideDolby |= i.id == 126;
+                continue;
+            }
+#endif
             int desiredQuality = result.quality;
             // 若设置了过高的清晰度, 自动切换到合适的清晰度, 默认为 128 (即无限制)
             if (i.height > i.width) {
@@ -612,14 +642,28 @@ void BasePlayerActivity::onVideoPlayUrl(const bilibili::VideoUrlResult& result) 
                 break;
             }
         }
+#ifdef WILIWILI_UWP_HDR
+        if (skippedWideDolby && result.quality == 126 && videoUrlResult.quality != 126)
+            brls::Application::notify("此杜比码流超过当前支持的 4K 解码范围，已选择兼容画质；也可选择兼容分P");
+#endif
 
         // 找到当前清晰度下可用的视频
         std::vector<bilibili::DashMedia> codecs;
         for (const auto& i : result.dash.video) {
             if (i.id == videoUrlResult.quality) {
+#ifdef WILIWILI_UWP_HDR
+                if (!wiliwili::compatibleXboxHdrStream(i.id, i.width, i.height)) continue;
+#endif
                 codecs.emplace_back(i);
             }
         }
+
+#ifdef WILIWILI_UWP_HDR
+        if (codecs.empty() || !MPVCore::instance().supportsUwpQuality(videoUrlResult.quality)) {
+            brls::Application::notify("Xbox 或电视不支持此 HDR 格式，请选择普通画质");
+            return;
+        }
+#endif
 
         // 匹配当前设定的视频编码
         bilibili::DashMedia v = codecs[0];  // 默认是 AVC/H.264
@@ -632,6 +676,9 @@ void BasePlayerActivity::onVideoPlayUrl(const bilibili::VideoUrlResult& result) 
 
         // 将主音频和备份音频链接合并，当作不同的音轨传给播放器，可以实现在播放失败时自动切换
         std::vector<std::string> audios;
+#ifdef WILIWILI_UWP_HDR
+        std::optional<bilibili::DashMedia> systemAudio;
+#endif
         if (!result.dash.audio.empty()) {
             // 选择音轨，支持杜比/无损优先和多级回退
             auto pickDolby = [&]() -> std::optional<bilibili::DashMedia> {
@@ -679,18 +726,29 @@ void BasePlayerActivity::onVideoPlayUrl(const bilibili::VideoUrlResult& result) 
                 }
             }
             // 生成音频列表
+#ifdef WILIWILI_UWP_HDR
+            systemAudio = a;
+#endif
             audios.emplace_back(a.base_url);
             audios.insert(audios.end(), a.backup_url.begin(), a.backup_url.end());
             brls::Logger::debug("Dash quality: {}; video: {}; audio: {}", videoUrlResult.quality, v.codecid, a.id);
         }
 
         // 给播放器设置链接
+#ifdef WILIWILI_UWP_HDR
+        if (v.id == 125 || v.id == 126) {
+            MPVCore::instance().setUwpDash(v, systemAudio ? &*systemAudio : nullptr, result.dash.duration, start, end);
+        } else {
+#endif
         this->video->setUrl(v.base_url, start, end, audios);
 
         // 设置备份视频链接
         for (const auto& backup_url : v.backup_url) {
             this->video->setBackupUrl(backup_url, start, end, audios);
         }
+#ifdef WILIWILI_UWP_HDR
+        }
+#endif
     } else {
         // flv
         brls::Logger::debug("Video type: flv");

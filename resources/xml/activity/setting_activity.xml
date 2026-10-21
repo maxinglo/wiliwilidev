@@ -193,6 +193,9 @@
 
                             <brls:BooleanCell
                                     id="cell/tvOSD"/>
+
+                            <brls:BooleanCell
+                                    id="cell/highlightTransition"/>
                         </brls:Box>
                         <brls:Header
                                 width="auto"

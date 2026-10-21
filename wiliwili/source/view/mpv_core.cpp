@@ -13,6 +13,10 @@
 #include "utils/number_helper.hpp"
 #include "utils/crash_helper.hpp"
 #include "view/mpv_core.hpp"
+#ifdef WILIWILI_UWP_HDR
+#include "api/bilibili/result/video_detail_result.h"
+#include "utils/frame_pacing.hpp"
+#endif
 
 #ifdef MPV_BUNDLE_DLL
 mpvSetOptionStringFunc mpvSetOptionString;
@@ -297,6 +301,30 @@ MPVCore::MPVCore() {
 }
 
 void MPVCore::init() {
+#ifdef WILIWILI_UWP_HDR
+    uwpVideo = std::make_unique<wiliwili::UwpVideoPlayer>();
+    uwpMediaControls = std::make_unique<wiliwili::UwpMediaControls>([this](wiliwili::UwpMediaCommand command, double value) {
+        using wiliwili::UwpMediaCommand;
+        switch (command) {
+            case UwpMediaCommand::Play: resume(); break;
+            case UwpMediaCommand::Pause: pause(); break;
+            case UwpMediaCommand::Stop: stop(); break;
+            case UwpMediaCommand::Seek: seek(static_cast<int64_t>(value)); break;
+            case UwpMediaCommand::Forward: seek(static_cast<int64_t>(playback_time + 10)); break;
+            case UwpMediaCommand::Rewind: seek(static_cast<int64_t>(std::max(0.0, playback_time - 10))); break;
+            case UwpMediaCommand::Rate: setSpeed(value); break;
+        }
+    });
+    uwpFrameSubscription = brls::Application::getRunLoopEvent()->subscribe([this]() {
+        if (!uwpVideo) return;
+        if (!uwpDrawn) uwpVideo->setVisible(false);
+        uwpDrawn = false;
+        pollUwpVideo();
+        updateUwpFrameRate();
+        if (uwpMediaControls) uwpMediaControls->update(video_stopped || video_eof, video_playing, video_paused,
+            playback_time, duration, video_speed);
+    });
+#endif
     setlocale(LC_NUMERIC, "C");
     this->mpv = mpvCreate();
     if (!mpv) {
@@ -512,6 +540,9 @@ void MPVCore::init() {
         static bool playing = false;
         static std::chrono::system_clock::time_point sleepTime{};
         if (focus) {
+#ifdef WILIWILI_UWP_HDR
+            if (uwpVideo && uwpVideo->active()) uwpVideo->resumeDisplay();
+#endif
             // restore AUTO_PLAY
             AUTO_PLAY = ProgramConfig::instance().getBoolOption(SettingItem::PLAYER_AUTO_PLAY);
             // application is on top
@@ -524,6 +555,9 @@ void MPVCore::init() {
             playing   = isPlaying();
             sleepTime = std::chrono::system_clock::now();
             pause();
+#ifdef WILIWILI_UWP_HDR
+            if (uwpVideo && uwpVideo->active()) uwpVideo->suspend();
+#endif
             // do not automatically play video
             AUTO_PLAY = false;
         }
@@ -541,6 +575,11 @@ MPVCore::~MPVCore() = default;
 #endif
 
 void MPVCore::clean() {
+#ifdef WILIWILI_UWP_HDR
+    brls::Application::getRunLoopEvent()->unsubscribe(uwpFrameSubscription);
+    uwpVideo.reset();
+    uwpMediaControls.reset();
+#endif
     check_error(mpvCommandString(this->mpv, "quit"));
 
     brls::Application::getWindowFocusChangedEvent()->unsubscribe(focusSubscription);
@@ -553,6 +592,9 @@ void MPVCore::clean() {
         mpvRenderContextFree(this->mpv_context);
         this->mpv_context = nullptr;
     }
+#ifdef WILIWILI_UWP_HDR
+    D3D11_CONTEXT->setTransparentPresentation(false);
+#endif
 
     brls::Logger::info("trying terminate mpv");
     if (this->mpv) {
@@ -782,6 +824,31 @@ bool MPVCore::isValid() { return mpv_context != nullptr; }
 
 void MPVCore::draw(brls::Rect area, float alpha) {
     if (mpv_context == nullptr) return;
+#ifdef WILIWILI_UWP_HDR
+    if (uwpVideo && uwpVideo->active()) {
+        uwpDrawn = true;
+        auto* vg = brls::Application::getNVGContext();
+        float transform[6], left, top, right, bottom;
+        nvgCurrentTransform(vg, transform);
+        nvgTransformPoint(&left, &top, transform, area.getMinX(), area.getMinY());
+        nvgTransformPoint(&right, &bottom, transform, area.getMaxX(), area.getMaxY());
+        // NanoVG maps its logical viewport into the UI composition visual.
+        // Xbox DPI may make that visual smaller than Application::windowWidth.
+        const auto target = D3D11_CONTEXT->getCompositionSize();
+        const float sx = target.x / brls::Application::windowWidth;
+        const float sy = target.y / brls::Application::windowHeight;
+        uwpVideo->setBounds(left * sx, top * sy, (right - left) * sx, (bottom - top) * sy, video_aspect,
+            VIDEO_ASPECT == "-3", VIDEO_ASPECT == "-2", VIDEO_MIRROR);
+        nvgSave(vg);
+        nvgGlobalCompositeOperation(vg, NVG_COPY);
+        nvgBeginPath(vg);
+        nvgRect(vg, area.getMinX(), area.getMinY(), area.getWidth(), area.getHeight());
+        nvgFillColor(vg, nvgRGBAf(0, 0, 0, 1.0f - alpha));
+        nvgFill(vg);
+        nvgRestore(vg);
+        return;
+    }
+#endif
     if (!(this->rect == area)) setFrameSize(area);
 
 #ifdef MPV_SW_RENDER
@@ -905,6 +972,10 @@ std::string MPVCore::getCacheSpeed() const {
 void MPVCore::eventMainLoop() {
     while (true) {
         auto event = mpvWaitEvent(this->mpv, 0);
+#ifdef WILIWILI_UWP_HDR
+        if (uwpVideo && uwpVideo->active() && event->event_id != MPV_EVENT_NONE && event->event_id != MPV_EVENT_LOG_MESSAGE)
+            continue;
+#endif
         switch (event->event_id) {
             case MPV_EVENT_NONE:
                 return;
@@ -1170,6 +1241,13 @@ void MPVCore::reset() {
 }
 
 void MPVCore::setUrl(const std::string &url, const std::string &extra, const std::string &method) {
+#ifdef WILIWILI_UWP_HDR
+    if (method == "replace" && uwpVideo) {
+        uwpVideo->stop();
+        setUwpTransparentPresentation(false);
+    }
+    else if (uwpVideo && uwpVideo->active()) return;
+#endif
     brls::Logger::debug("{} Url: {}, extra: {}", method, url, extra);
     if (extra.empty()) {
         command_async("loadfile", url, method);
@@ -1307,6 +1385,19 @@ int MPVCore::getHue() const { return video_hue; }
 
 // todo: remove these sync function
 std::string MPVCore::getString(const std::string &key) {
+#ifdef WILIWILI_UWP_HDR
+    if (uwpVideo && uwpVideo->active()) {
+        const auto info = uwpVideo->mediaInfo();
+        if (key == "hwdec-current") return "Windows Media Foundation (HDR)";
+        if (key == "file-format") return info ? info->format : "system media pipeline";
+        if (key == "video-params/pixelformat") return "system-managed (10-bit video)";
+        if (key == "video-codec") return info ? info->videoCodec : "";
+        if (key == "audio-codec") return info ? info->audioCodec : "";
+        if (key == "audio-params/channel-count") return info && info->audioChannels ? std::to_string(info->audioChannels) : "";
+        if (key == "path") return filepath;
+        return "";
+    }
+#endif
     char *value = nullptr;
     mpvGetProperty(mpv, key.c_str(), MPV_FORMAT_STRING, &value);
     if (!value) return "";
@@ -1316,18 +1407,44 @@ std::string MPVCore::getString(const std::string &key) {
 }
 
 double MPVCore::getDouble(const std::string &key) {
+#ifdef WILIWILI_UWP_HDR
+    if (uwpVideo && uwpVideo->active()) {
+        if (key == "playback-time" || key == "time-pos") return playback_time;
+        if (key == "duration") return duration;
+        if (key == "speed") return video_speed;
+        if (key == "volume") return volume;
+        const auto info = uwpVideo->mediaInfo();
+        if (info) {
+            if (key == "video-params/w") return info->width;
+            if (key == "video-params/h") return info->height;
+            if (key == "video-params/aspect") return info->height ? static_cast<double>(info->width) / info->height : 0;
+            if (key == "container-fps") return info->fps;
+            if (key == "video-bitrate") return info->videoBitrate;
+            if (key == "audio-bitrate") return info->audioBitrate;
+            if (key == "audio-params/samplerate") return info->audioSampleRate;
+            if (key == "audio-params/channel-count") return info->audioChannels;
+        }
+        return 0;
+    }
+#endif
     double value = 0;
     mpvGetProperty(mpv, key.c_str(), MPV_FORMAT_DOUBLE, &value);
     return value;
 }
 
 int64_t MPVCore::getInt(const std::string &key) {
+#ifdef WILIWILI_UWP_HDR
+    if (uwpVideo && uwpVideo->active()) return static_cast<int64_t>(getDouble(key));
+#endif
     int64_t value = 0;
     mpvGetProperty(mpv, key.c_str(), MPV_FORMAT_INT64, &value);
     return value;
 }
 
 std::unordered_map<std::string, mpv_node> MPVCore::getNodeMap(const std::string &key) {
+#ifdef WILIWILI_UWP_HDR
+    if (uwpVideo && uwpVideo->active()) return {};
+#endif
     mpv_node node;
     std::unordered_map<std::string, mpv_node> nodeMap;
     if (mpvGetProperty(mpv, key.c_str(), MPV_FORMAT_NODE, &node) < 0) return nodeMap;
@@ -1399,6 +1516,44 @@ void MPVCore::clearShader(bool showHint) {
 void MPVCore::showOsdText(const std::string &value, int d) { command_async("show-text", value, d); }
 
 void MPVCore::_command_async(const std::vector<std::string> &commands) {
+#ifdef WILIWILI_UWP_HDR
+    if (uwpVideo && uwpVideo->active()) {
+        if (commands.empty()) return;
+        size_t i = commands[0] == "no-osd" ? 1 : 0;
+        if (i >= commands.size()) return;
+        const auto& command = commands[i];
+        if (command == "stop") {
+            uwpVideo->stop();
+            setUwpTransparentPresentation(false);
+            video_stopped = true;
+            video_playing = false;
+            disableDimming(false);
+            mpvCoreEvent.fire(MpvEventEnum::MPV_STOP);
+        } else if (command == "set" && commands.size() > i + 2) {
+            const auto& key = commands[i + 1];
+            const auto& value = commands[i + 2];
+            if (key == "pause") {
+                if (value != "yes" && video_eof) {
+                    uwpVideo->seek(0);
+                    video_eof = false;
+                }
+                uwpVideo->pause(value == "yes");
+            }
+            else if (key == "volume") uwpVideo->setVolume(std::stoi(value));
+            else if (key == "speed") uwpVideo->speed(std::stod(value));
+            else if (key == "loop-file") uwpVideo->setLooping(value == "inf" || value == "yes");
+            else if (key == "mute") uwpVideo->setVolume(value == "yes" ? 0 : VIDEO_VOLUME);
+        } else if (command == "seek" && commands.size() > i + 1) {
+            double position = std::stod(commands[i + 1]);
+            const auto mode = commands.size() > i + 2 ? commands[i + 2] : "relative";
+            if (mode == "relative") position += playback_time;
+            else if (mode == "absolute-percent") position = duration * position / 100;
+            uwpVideo->seek(position);
+            video_eof = false;
+        }
+        return;
+    }
+#endif
     std::vector<const char *> res;
     res.reserve(commands.size() + 1);
     for (auto &i : commands) {
@@ -1407,3 +1562,165 @@ void MPVCore::_command_async(const std::vector<std::string> &commands) {
     res.emplace_back(nullptr);
     mpvCommandAsync(mpv, 0, res.data());
 }
+
+#ifdef WILIWILI_UWP_HDR
+std::optional<wiliwili::UwpMediaInfo> MPVCore::getUwpMediaInfo() const {
+    return uwpVideo ? uwpVideo->mediaInfo() : std::nullopt;
+}
+void MPVCore::setUwpMediaMetadata(const std::string& title, const std::string& artist, const std::string& artwork) {
+    if (uwpMediaControls) uwpMediaControls->setMetadata(title, artist, artwork);
+}
+bool MPVCore::supportsUwpQuality(int quality) const {
+    if (quality != 125 && quality != 126) return true;
+    return uwpVideo && uwpVideo->supports(quality == 126 ? wiliwili::HdrOutput::DolbyVision : wiliwili::HdrOutput::Hdr10);
+}
+
+void MPVCore::setUwpDash(const bilibili::DashMedia& video, const bilibili::DashMedia* audio,
+                         double duration, int start, int end) {
+    // Drain the old libmpv source before publishing events for the native one.
+    mpvCommandString(mpv, "stop");
+    if (!setUwpTransparentPresentation(true)) {
+        brls::Application::notify("无法创建 HDR 视频合成表面，请切换到普通画质");
+        mpvCoreEvent.fire(MpvEventEnum::MPV_FILE_ERROR);
+        return;
+    }
+    filepath = video.base_url;
+    video_stopped = false;
+    video_eof = false;
+    playback_time = start;
+    video_progress = start;
+    this->duration = static_cast<int64_t>(duration);
+    mpvCoreEvent.fire(MpvEventEnum::START_FILE);
+    mpvCoreEvent.fire(MpvEventEnum::LOADING_START);
+    uwpBuffering = true;
+    uwpVideo->loadDash(video, audio, duration, start, end, AUTO_PLAY);
+    uwpVideo->setVolume(VIDEO_VOLUME);
+}
+
+bool MPVCore::setUwpTransparentPresentation(bool enabled) {
+    if (D3D11_CONTEXT->isTransparentPresentation() == enabled) return true;
+    // libmpv retains its swap chain. Release the renderer before replacing
+    // that chain, while keeping the D3D device, NanoVG and image cache alive.
+    if (mpv_context) {
+        mpvRenderContextSetUpdateCallback(mpv_context, nullptr, nullptr);
+        mpvRenderContextFree(mpv_context);
+        mpv_context = nullptr;
+    }
+    const bool switched = D3D11_CONTEXT->setTransparentPresentation(enabled);
+    mpv_dxgi_init_params init{D3D11_CONTEXT->getDevice(), D3D11_CONTEXT->getSwapChain()};
+    mpv_render_param params[]{
+        {MPV_RENDER_PARAM_API_TYPE, const_cast<char*>(MPV_RENDER_API_TYPE_DXGI)},
+        {MPV_RENDER_PARAM_DXGI_INIT_PARAMS, &init},
+        {MPV_RENDER_PARAM_INVALID, nullptr},
+    };
+    const auto result = mpvRenderContextCreate(&mpv_context, mpv, params);
+    if (result < 0) {
+        brls::Logger::error("Xbox renderer recreation failed: {}", result);
+        return false;
+    }
+    mpvRenderContextSetUpdateCallback(mpv_context, on_update, this);
+    return switched;
+}
+
+void MPVCore::updateUwpFrameRate() {
+    const auto now = std::chrono::steady_clock::now();
+    const double userLimit = ProgramConfig::instance().getIntOption(SettingItem::LIMITED_FPS);
+    const auto outputRate = wiliwili::canonicalFrameRate(uwpVideo->displayRefreshRate());
+    double budget = userLimit > 0 ? userLimit : 120;
+    if (outputRate > 0) budget = std::min(budget, outputRate);
+    const bool hasVideo = !video_stopped && !video_eof;
+    static auto nextSourcePoll = now;
+    if (!hasVideo) uwpUiVideoRate = 0;
+    else if (now >= nextSourcePoll) {
+        nextSourcePoll = now + std::chrono::milliseconds(250);
+        uwpUiVideoRate = wiliwili::canonicalFrameRate(uwpVideo->active()
+            ? uwpVideo->frameRate() : getDouble("container-fps")) * video_speed;
+        if (!std::isfinite(uwpUiVideoRate) || uwpUiVideoRate < 0) uwpUiVideoRate = 0;
+    }
+    // Keep the full output refresh by default. Rendering load never lowers the
+    // target; only an explicit user cap selects a smaller refresh divisor.
+    const auto refresh = outputRate > 0 ? outputRate : budget;
+    const auto divisor = wiliwili::displayUiDivisor(refresh, budget, uwpUiVideoRate);
+    const auto target = refresh / divisor;
+    const auto presentationRate = D3D11_CONTEXT->getPresentationRefreshRate();
+    const auto interval = static_cast<int>(wiliwili::displayUiSwapInterval(presentationRate, target));
+    if (std::abs(uwpUiFrameRate - target) <= 0.00001 && uwpUiSwapInterval == interval) return;
+    // Xbox composition can stay at 60 Hz while HDMI is at 120 Hz. An interval
+    // against that slower clock would cap and repeatedly downgrade a healthy
+    // 120 fps UI. Use it only when it matches the requested refresh divisor.
+    brls::Application::setFrameRateLimit(interval ? 0 : target);
+    brls::Application::setSwapInterval(interval);
+    uwpUiSwapInterval = interval;
+    uwpUiFrameRate = target;
+    brls::Logger::info("Xbox UI display cadence: UI={:.6f}, output={:.6f}, divisor={}, automatic=false, syncInterval={}, composition={:.6f}",
+        target, outputRate, divisor, interval, presentationRate);
+}
+
+void MPVCore::pollUwpVideo() {
+    // The source is retained after EOF for replay. Its suspended sessions must
+    // not publish fresh buffering/progress events over the completed state.
+    if (video_eof) return;
+    const auto state = uwpVideo->takeSnapshot();
+    if (!state.active) return;
+    if (state.failed) {
+        uwpVideo->stop();
+        setUwpTransparentPresentation(false);
+        video_stopped = true;
+        video_playing = false;
+        mpv_error_code = MPV_ERROR_UNSUPPORTED;
+        disableDimming(false);
+        mpvCoreEvent.fire(MpvEventEnum::MPV_STOP);
+        mpvCoreEvent.fire(MpvEventEnum::MPV_FILE_ERROR);
+        brls::Application::notify("HDR 播放失败，请切换到普通画质：" + state.error);
+        return;
+    }
+    if (state.loaded) {
+        brls::Logger::info("Xbox system media opened: {}", state.output);
+        mpvCoreEvent.fire(MpvEventEnum::MPV_LOADED);
+    }
+    const auto newDuration = static_cast<int64_t>(state.duration);
+    if (newDuration > 0 && duration != newDuration) {
+        duration = newDuration;
+        mpvCoreEvent.fire(MpvEventEnum::UPDATE_DURATION);
+    }
+    if (state.loaded) mpvCoreEvent.fire(MpvEventEnum::UPDATE_DURATION);
+    playback_time = state.position;
+    percent_pos = duration > 0 ? playback_time * 100 / duration : 0;
+    if (video_progress != static_cast<int64_t>(state.position)) {
+        video_progress = static_cast<int64_t>(state.position);
+        mpvCoreEvent.fire(MpvEventEnum::UPDATE_PROGRESS);
+    }
+    if (video_paused != state.paused || state.loaded) {
+        video_paused = state.paused;
+        mpvCoreEvent.fire(video_paused ? MpvEventEnum::MPV_PAUSE : MpvEventEnum::MPV_RESUME);
+    }
+    if (video_playing != state.playing) {
+        video_playing = state.playing;
+        disableDimming(video_playing);
+        mpvCoreEvent.fire(MpvEventEnum::MPV_IDLE);
+    }
+    if (video_speed != state.speed) {
+        video_speed = state.speed;
+        mpvCoreEvent.fire(MpvEventEnum::VIDEO_SPEED_CHANGE);
+    }
+    volume = state.volume;
+    if (uwpBuffering != state.buffering) {
+        uwpBuffering = state.buffering;
+        mpvCoreEvent.fire(uwpBuffering ? MpvEventEnum::LOADING_START : MpvEventEnum::LOADING_END);
+    }
+    if (state.ended && !video_eof) {
+        video_eof = true;
+        video_playing = false;
+        video_paused = true;
+        if (uwpBuffering) {
+            uwpBuffering = false;
+            mpvCoreEvent.fire(MpvEventEnum::LOADING_END);
+        }
+        uwpVideo->pause(true);
+        uwpVideo->suspend();
+        disableDimming(false);
+        mpvCoreEvent.fire(MpvEventEnum::END_OF_FILE);
+    }
+}
+
+#endif

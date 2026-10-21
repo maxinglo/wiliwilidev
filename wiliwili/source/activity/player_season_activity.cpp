@@ -154,6 +154,9 @@ void PlayerSeasonActivity::onContentAvailable() {
 void PlayerSeasonActivity::onSeasonEpisodeInfo(const bilibili::SeasonEpisodeResult& result) {
     std::string title = this->seasonInfo.season_title + " - " + result.title;
     APP_E->fire(VideoView::SET_TITLE, (void*)title.c_str());
+#ifdef WILIWILI_UWP_HDR
+    MPVCore::instance().setUwpMediaMetadata(title, seasonInfo.season_title, seasonInfo.cover);
+#endif
     this->videoBVIDLabel->setText(result.bvid);
 }
 

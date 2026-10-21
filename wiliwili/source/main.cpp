@@ -107,6 +107,11 @@ int main(int argc, char* argv[]) {
     return EXIT_SUCCESS;
 }
 
-#ifdef __WINRT__
+#ifdef __WINRT_NEW__
+#include <borealis/platforms/winrt/winrt_app.hpp>
+int __stdcall wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    return WinrtApp::RunApp(main);
+}
+#elif defined(__WINRT__)
 #include <borealis/core/main.hpp>
 #endif

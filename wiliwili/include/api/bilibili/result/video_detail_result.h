@@ -454,19 +454,40 @@ inline void from_json(const nlohmann::json& nlohmann_json_j, VideoDUrl& nlohmann
 
 class DashMedia {
 public:
-    int id;  // The format ID of Bilibili, corresponds to one resolution.
+    int id = 0;  // The format ID of Bilibili, corresponds to one resolution.
              // There may be items with the same ID but different bandwidth.
     std::string base_url;
     std::vector<std::string> backup_url;
-    unsigned int bandwidth;
-    int width, height;  // only for video
-    int codecid;
+    unsigned int bandwidth = 0;
+    int width = 0, height = 0;  // only for video
+    int codecid = 0;
+    // Preserve the ISO BMFF/DASH description for the system media pipeline.
+    std::string codecs, mime_type, frame_rate;
+    std::string initialization, index_range;
 };
 inline void from_json(const nlohmann::json& nlohmann_json_j, DashMedia& nlohmann_json_t) {
     if (nlohmann_json_j.contains("backup_url") && !nlohmann_json_j.at("backup_url").is_null()) {
         nlohmann_json_j.at("backup_url").get_to(nlohmann_json_t.backup_url);
     }
     NLOHMANN_JSON_EXPAND(NLOHMANN_JSON_PASTE(NLOHMANN_JSON_FROM, id, base_url, bandwidth, height, width, codecid));
+    auto readString = [](const nlohmann::json& object, const char* primary, const char* alternate) {
+        for (const auto* key : {primary, alternate}) {
+            const auto value = object.find(key);
+            if (value != object.end() && value->is_string()) return value->get<std::string>();
+        }
+        return std::string{};
+    };
+    nlohmann_json_t.codecs = readString(nlohmann_json_j, "codecs", "codecs");
+    nlohmann_json_t.mime_type = readString(nlohmann_json_j, "mimeType", "mime_type");
+    nlohmann_json_t.frame_rate = readString(nlohmann_json_j, "frameRate", "frame_rate");
+    nlohmann_json_t.initialization.clear();
+    nlohmann_json_t.index_range.clear();
+    const auto segment = nlohmann_json_j.find("SegmentBase") != nlohmann_json_j.end()
+        ? nlohmann_json_j.find("SegmentBase") : nlohmann_json_j.find("segment_base");
+    if (segment != nlohmann_json_j.end() && segment->is_object()) {
+        nlohmann_json_t.initialization = readString(*segment, "Initialization", "initialization");
+        nlohmann_json_t.index_range = readString(*segment, "indexRange", "index_range");
+    }
 }
 
 class Dash {
