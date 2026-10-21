@@ -14,9 +14,13 @@
 
 #ifdef WILIWILI_UWP_HDR
 #include <winrt/Windows.Storage.h>
+#include <winrt/Windows.ApplicationModel.h>
+#include "api/bilibili/util/http.hpp"
 #endif
 
 #include <cmath>
+#include <iterator>
+#include <stdexcept>
 #include <borealis/core/application.hpp>
 #include <borealis/core/cache_helper.hpp>
 #include <borealis/core/touch/pan_gesture.hpp>
@@ -221,7 +225,7 @@ std::unordered_map<SettingItem, ProgramOption> ProgramConfig::SETTING_MAP = {
      {"tls_verify",
       {},
       {},
-#if defined(__PSV__) || defined(__SWITCH__) || defined(PS4) || defined(__WINRT__)
+#if defined(__PSV__) || defined(__SWITCH__) || defined(PS4)
       0}},
 #else
       1}},
@@ -1033,6 +1037,15 @@ char __attribute__((optimize("no-optimize-sibling-calls"))) *sce_strdup(const ch
 #endif
 
 void ProgramConfig::init() {
+#ifdef WILIWILI_UWP_HDR
+    // UWP OpenSSL disables stdio and cannot enumerate the system root store.
+    // libcurl consumes the PEM bytes; libmpv gets the absolute packaged path.
+    bilibili::HTTP::CAINFO = winrt::to_string(winrt::Windows::ApplicationModel::Package::Current()
+        .InstalledLocation().Path()) + "/cacert.pem";
+    std::ifstream certificateFile(bilibili::HTTP::CAINFO, std::ios::binary);
+    bilibili::HTTP::CA_BUNDLE.assign(std::istreambuf_iterator<char>(certificateFile), std::istreambuf_iterator<char>());
+    if (bilibili::HTTP::CA_BUNDLE.empty()) throw std::runtime_error("Missing Xbox CA certificate bundle");
+#endif
     brls::Logger::info("wiliwili {}", APPVersion::instance().git_tag);
     wiliwili::initCrashDump();
 

@@ -15,6 +15,7 @@
 #include "view/mpv_core.hpp"
 #ifdef WILIWILI_UWP_HDR
 #include "api/bilibili/result/video_detail_result.h"
+#include "api/bilibili/util/http.hpp"
 #include "utils/frame_pacing.hpp"
 #endif
 
@@ -334,6 +335,11 @@ void MPVCore::init() {
     // misc
     mpvSetOptionString(mpv, "config", "yes");
     mpvSetOptionString(mpv, "config-dir", confDir.c_str());
+#ifdef WILIWILI_UWP_HDR
+    mpvSetOptionString(mpv, "tls-ca-file", bilibili::HTTP::CAINFO.c_str());
+    mpvSetOptionString(mpv, "tls-verify",
+                       ProgramConfig::instance().getBoolOption(SettingItem::TLS_VERIFY) ? "yes" : "no");
+#endif
     mpvSetOptionString(mpv, "gpu-shader-cache-dir", fmt::format("{}/cache", confDir).c_str());
     mpvSetOptionString(mpv, "ytdl", "no");
     mpvSetOptionString(mpv, "audio-channels", "stereo");

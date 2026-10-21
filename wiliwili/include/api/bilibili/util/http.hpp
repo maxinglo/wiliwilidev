@@ -77,12 +77,24 @@ public:
     static inline cpr::VerifySsl VERIFY;
     static inline std::string PROTOCOL = "https:";
     static inline CurlSharedObject CURL_SHARE;
+#ifdef WILIWILI_UWP_HDR
+    static inline std::string CAINFO;
+    static inline std::string CA_BUNDLE;
+    static void configureUwpCertificates(CURL* curl) {
+        // The UWP OpenSSL build disables stdio; feed trust anchors from memory.
+        curl_blob bundle{CA_BUNDLE.data(), CA_BUNDLE.size(), CURL_BLOB_NOCOPY};
+        curl_easy_setopt(curl, CURLOPT_CAINFO_BLOB, &bundle);
+    }
+#endif
 
     static std::string getEncodedCookie(const cpr::Cookies& cookies);
 
     static std::shared_ptr<cpr::Session> createSession() {
         auto session = std::make_shared<cpr::Session>();
         CURL* curl = session->GetCurlHolder()->handle;
+#ifdef WILIWILI_UWP_HDR
+        configureUwpCertificates(curl);
+#endif
         curl_easy_setopt(curl, CURLOPT_SHARE, HTTP::CURL_SHARE.getShare());
         curl_easy_setopt(curl, CURLOPT_DNS_CACHE_TIMEOUT, HTTP::DNS_CACHE_TIMEOUT);
         session->SetTimeout(cpr::Timeout{bilibili::HTTP::TIMEOUT});

@@ -290,6 +290,9 @@ void ImageHelper::requestImage() {
     // 请求图片
     cpr::Session session;
     CURL* curl = session.GetCurlHolder()->handle;
+#ifdef WILIWILI_UWP_HDR
+    bilibili::HTTP::configureUwpCertificates(curl);
+#endif
     curl_easy_setopt(curl, CURLOPT_SHARE, ImageThreadPool::instance().getShare());
     curl_easy_setopt(curl, CURLOPT_DNS_CACHE_TIMEOUT, bilibili::HTTP::DNS_CACHE_TIMEOUT);
     session.SetTimeout(cpr::Timeout{bilibili::HTTP::TIMEOUT});
